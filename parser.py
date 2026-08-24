@@ -486,6 +486,7 @@ def main():
             
             summary.sort(key=lambda x: x.get('total_reviews', 0), reverse=True)
             atomic_write_json('market_report_v2.json', summary)
+            atomic_write_json('market_report.json', summary)
                 
         mins = int(global_elapsed // 60)
         secs = int(global_elapsed % 60)

@@ -37,13 +37,10 @@ def mark_proxy(proxy, status, base_dir, good_proxies, bad_proxies, pool):
             f.write(proxy + "\n")
 
 async def fetch_page(page: int, pool: list, good_proxies: set, bad_proxies: set, base_dir: str, sem: asyncio.Semaphore) -> list:
-    """Извлекает ID продавцов со страницы с использованием случайного прокси для каждой попытки."""
     async with sem:
         url = f"https://rmthub.com/ru/funpay?category=top_sellers&filter=all_time&page={page}"
         
         for attempt in range(1, 6):
-            # На 1-2 попытке 50% шанс использовать проверенный прокси. 
-            # На 3-5 попытках - 100% шанс использовать проверенный (чтобы гарантированно докачать страницу).
             use_good = False
             if good_proxies:
                 if attempt >= 3:
@@ -95,14 +92,12 @@ async def fetch_page(page: int, pool: list, good_proxies: set, bad_proxies: set,
                 mark_proxy(proxy_url, 'bad', base_dir, good_proxies, bad_proxies, pool)
                 logger.debug(f"Ошибка прокси при загрузке страницы {page}: {e}")
             
-            # Небольшая пауза перед следующей попыткой
             await asyncio.sleep(1)
             
-        logger.error(f"❌ Страница {page} не загрузилась после 5 попыток с разными прокси.")
+        logger.error(f"❌ Страница {page} не загрузилась после 5 попыток.")
         return []
 
 async def worker(queue: asyncio.Queue, pool: list, good_proxies: set, bad_proxies: set, base_dir: str, results: list, sem: asyncio.Semaphore, failed_pages: list):
-    """Воркер для обработки очереди страниц."""
     while True:
         try:
             page = queue.get_nowait()
@@ -117,32 +112,29 @@ async def worker(queue: asyncio.Queue, pool: list, good_proxies: set, bad_proxie
             
         queue.task_done()
 
-async def main():
+async def main(target_count: int = None, use_failed_only: bool = False):
     logger.info("=== ЗАПУСК ПАРСИНГА ОЧЕРЕДИ С RMTHUB ===")
     base_dir = os.path.dirname(os.path.abspath(__file__))
     failed_file = os.path.join(base_dir, "failed_pages.txt")
     
     pages_to_load = []
     
-    if os.path.exists(failed_file):
+    if os.path.exists(failed_file) and not target_count:
         with open(failed_file, "r", encoding="utf-8") as f:
             saved_fails = [int(line.strip()) for line in f if line.strip().isdigit()]
-        if saved_fails:
-            ans = input(f"Найдено {len(saved_fails)} нескачанных страниц с прошлого раза. Парсим ТОЛЬКО ИХ? (y/n): ")
-            if ans.lower().strip() == 'y':
-                pages_to_load = saved_fails
-                logger.info(f"Будут перепаршены только пропущенные страницы: {pages_to_load}")
-            else:
-                os.remove(failed_file)
+        if saved_fails and use_failed_only:
+            pages_to_load = saved_fails
+            logger.info(f"Будут перепаршены только пропущенные страницы: {pages_to_load}")
     
     if not pages_to_load:
-        try:
-            target_count = int(input("Сколько топ-продавцов вы хотите собрать с RMTHub? (Например: 2000): "))
-        except Exception:
-            logger.warning("Введено не число или нет доступа к stdin, по умолчанию собираем 600 (30 страниц).")
-            target_count = 600
-            
-        pages_to_fetch = math.ceil(target_count / 20)
+        if target_count is None:
+            try:
+                ans = input("Сколько топ-продавцов вы хотите собрать с RMTHub? (Например: 200): ")
+                target_count = int(ans) if ans.strip().isdigit() else 200
+            except Exception:
+                target_count = 200
+                
+        pages_to_fetch = max(1, math.ceil(target_count / 20))
         pages_to_load = list(range(1, pages_to_fetch + 1))
         logger.info(f"Стягиваем {pages_to_fetch} страниц (Топ-{target_count}) в пуле воркеров...")
 
@@ -162,7 +154,7 @@ async def main():
             for line in f:
                 if line.strip():
                     parts = line.strip().split(':')
-                    if len(parts) == 2:
+                    if len(parts) == 2 and parts[1].isdigit():
                         all_ids[parts[0]] = int(parts[1])
                     else:
                         all_ids[parts[0]] = 0
@@ -173,7 +165,7 @@ async def main():
         
     results = []
     failed_pages = []
-    sem = asyncio.Semaphore(15) # Ограничиваем количество одновременных запросов к RMTHub
+    sem = asyncio.Semaphore(15)
     
     num_workers = min(15, len(pool) + len(good_proxies) if (pool or good_proxies) else 5)
     workers = [asyncio.create_task(worker(queue, pool, good_proxies, bad_proxies, base_dir, results, sem, failed_pages)) for _ in range(num_workers)]
@@ -187,9 +179,7 @@ async def main():
     logger.info(f"Собрано уникальных продавцов в очереди: {len(all_ids)}")
     
     if failed_pages:
-        logger.error(f"⚠️ ВНИМАНИЕ: Не удалось загрузить следующие страницы: {', '.join(map(str, failed_pages))}")
-        logger.error("Возможно, все прокси были заблокированы или сайт RMTHub недоступен.")
-        logger.warning("Собранная база неполная. Неудачные страницы сохранены в failed_pages.txt.")
+        logger.warning(f"Неудачные страницы сохранены в failed_pages.txt ({len(failed_pages)} шт).")
         atomic_write_lines(failed_file, [str(p) for p in failed_pages])
     else:
         logger.success("Все запрошенные страницы успешно обработаны!")
@@ -199,7 +189,7 @@ async def main():
     lines_to_write = [f"{uid}:{count}" for uid, count in sorted(all_ids.items(), key=lambda x: x[1], reverse=True)]
     atomic_write_lines(queue_path, lines_to_write)
             
-    logger.success(f"Сохранено в queue.txt ({len(all_ids)} продавцов)! Теперь можно запускать parser.py")
+    logger.success(f"Сохранено в queue.txt ({len(all_ids)} продавцов)!")
 
 if __name__ == "__main__":
     if os.name == 'nt':
