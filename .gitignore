@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Local runtime & data
+*.db
+*.sqlite
+*.sqlite3
+data/
+logs/
+reports/
+reports_v2/
+*.log
+debug.html
+pytest_output.txt
+
+# Sensitive proxy lists
+proxies.txt
+good_proxies.txt
+good_*.txt
+bad_*.txt
+queue.txt
+
+# IDE
+.idea/
+.vscode/
+.env

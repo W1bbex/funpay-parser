@@ -1,0 +1,3 @@
+# Format: ip:port or protocol://user:pass@ip:port
+# 127.0.0.1:8080
+# socks5://user:pass@1.2.3.4:1080
