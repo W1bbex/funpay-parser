@@ -8,7 +8,10 @@ from bs4 import BeautifulSoup
 from loguru import logger
 
 # Добавляем путь к Cardinal
-sys.path.append(os.path.abspath(r"C:\Users\w1bbex\Desktop\Cardinal"))
+cardinal_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "Cardinal"))
+if not os.path.exists(cardinal_path):
+    cardinal_path = r"C:\Projects\Cardinal"
+sys.path.append(cardinal_path)
 try:
     from FunPayAPI.account import Account
 except ImportError as e:

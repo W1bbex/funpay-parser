@@ -27,3 +27,6 @@ queue.txt
 .idea/
 .vscode/
 .env
+
+# Scratch scripts
+scratch/
