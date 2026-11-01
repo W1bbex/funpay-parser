@@ -163,14 +163,15 @@ def test_profile_harvester_chips_regex(mock_parser):
 
 # 12. Regression test: extract user ID from URL or raw digits
 def test_extract_user_id_from_url_or_raw():
-    import re
-    def extract_id(val: str):
-        m = re.search(r'(?:users/)?(\d+)', val.strip())
-        return m.group(1) if m else None
+    from utils import extract_user_id
 
-    assert extract_id("14273448") == "14273448"
-    assert extract_id("https://funpay.com/users/14273448/") == "14273448"
-    assert extract_id("https://funpay.com/users/14273448") == "14273448"
-    assert extract_id("funpay.com/users/14273448/") == "14273448"
-    assert extract_id("   https://funpay.com/ru/users/3/  ") == "3"
-    assert extract_id("not-a-valid-input") is None
+    assert extract_user_id("14273448") == "14273448"
+    assert extract_user_id("https://funpay.com/users/14273448/") == "14273448"
+    assert extract_user_id("https://funpay.com/users/14273448") == "14273448"
+    assert extract_user_id("funpay.com/users/14273448/") == "14273448"
+    assert extract_user_id("   https://funpay.com/ru/users/3/  ") == "3"
+    assert extract_user_id("w1bbex") == "14273448"
+    assert extract_user_id("W1bbex") == "14273448"
+    assert extract_user_id("Dipper") is None
+    assert extract_user_id("some_user123") is None
+    assert extract_user_id("not-a-valid-input") is None
