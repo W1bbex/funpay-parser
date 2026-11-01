@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import sqlite3
 import pytest
@@ -6,17 +7,17 @@ import pytest
 def test_cli_funpay_db_path_env(tmp_path):
     # Создаем путь к тестовой БД
     custom_db_path = str(tmp_path / "custom_test.sqlite3")
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     
     # Запускаем funpay-analytics init-db в отдельном процессе 
     # с установленной переменной окружения FUNPAY_DB_PATH
     env = os.environ.copy()
     env["FUNPAY_DB_PATH"] = custom_db_path
-    
-    # Мы можем вызвать python -m funpay_analytics.cli init-db
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    src_dir = os.path.join(base_dir, 'src')
+    env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{env.get('PYTHONPATH', '')}"
     
     result = subprocess.run(
-        ["python", "-m", "funpay_analytics.cli", "init-db"],
+        [sys.executable, "-m", "funpay_analytics.cli", "init-db"],
         env=env,
         cwd=base_dir,
         capture_output=True,

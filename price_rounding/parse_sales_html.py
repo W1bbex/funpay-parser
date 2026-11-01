@@ -52,11 +52,12 @@ def parse_sales_html(html_path, output_json_path):
     logger.success(f"Продажи успешно сохранены в удобном формате: {output_json_path}")
 
 if __name__ == "__main__":
-    # Путь к HTML-файлу пользователя
-    html_file = r"C:\Users\w1bbex\Desktop\Мои продажи _ FunPay_files\Мои продажи _ FunPay.html"
-    
-    # Куда сохранять результат
     base_dir = os.path.dirname(__file__)
+    html_env = os.environ.get("FUNPAY_SALES_HTML")
+    html_file = html_env if html_env else os.path.join(base_dir, "sales.html")
     output_file = os.path.join(base_dir, "parsed_sales.json")
     
-    parse_sales_html(html_file, output_file)
+    if os.path.exists(html_file):
+        parse_sales_html(html_file, output_file)
+    else:
+        logger.warning(f"Файл продаж не найден: {html_file}")

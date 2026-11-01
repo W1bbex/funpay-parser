@@ -6,11 +6,14 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from funpay_analytics.storage.db import get_db
 
-def save_raw_snapshot(source_type, external_id, content_bytes, extension="json"):
+def save_raw_snapshot(source_type, external_id=None, content_bytes=b"", extension="json"):
     content_sha256 = hashlib.sha256(content_bytes).hexdigest()
     
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-    raw_dir = os.path.join(base_dir, 'data', 'raw', source_type)
+    data_dir = os.environ.get("FUNPAY_DATA_DIR")
+    if not data_dir:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+        data_dir = os.path.join(base_dir, 'data')
+    raw_dir = os.path.join(data_dir, 'raw', source_type)
     os.makedirs(raw_dir, exist_ok=True)
     
     file_name = f"{content_sha256}.{extension}.gz"
@@ -21,7 +24,7 @@ def save_raw_snapshot(source_type, external_id, content_bytes, extension="json")
         temp_path = file_path + ".tmp"
         with gzip.open(temp_path, 'wb') as f:
             f.write(content_bytes)
-        os.rename(temp_path, file_path) 
+        os.replace(temp_path, file_path) 
         
     return content_sha256, compressed_path_relative
 

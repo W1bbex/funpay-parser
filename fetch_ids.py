@@ -1,5 +1,4 @@
 import os
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
 import asyncio
 import math
 import random
@@ -25,46 +24,45 @@ def get_rmthub_proxies(all_proxies, base_dir):
 
 def mark_proxy(proxy, status, base_dir, good_proxies, bad_proxies, pool):
     if not proxy: return
-    if status == 'good' and proxy not in good_proxies:
-        good_proxies.add(proxy)
-        with open(os.path.join(base_dir, "good_rmthub.txt"), "a", encoding="utf-8") as f:
-            f.write(proxy + "\n")
-    elif status == 'bad' and proxy not in bad_proxies:
-        bad_proxies.add(proxy)
-        if proxy in pool:
-            pool.remove(proxy)
-        with open(os.path.join(base_dir, "bad_rmthub.txt"), "a", encoding="utf-8") as f:
-            f.write(proxy + "\n")
+    if status == 'good':
+        bad_proxies.discard(proxy)
+        if proxy not in good_proxies:
+            good_proxies.add(proxy)
+            with open(os.path.join(base_dir, "good_rmthub.txt"), "a", encoding="utf-8") as f:
+                f.write(proxy + "\n")
+    elif status == 'bad':
+        good_proxies.discard(proxy)
+        if proxy not in bad_proxies:
+            bad_proxies.add(proxy)
+            if proxy in pool:
+                pool.remove(proxy)
+            with open(os.path.join(base_dir, "bad_rmthub.txt"), "a", encoding="utf-8") as f:
+                f.write(proxy + "\n")
 
 async def fetch_page(page: int, pool: list, good_proxies: set, bad_proxies: set, base_dir: str, sem: asyncio.Semaphore) -> list:
     async with sem:
         url = f"https://rmthub.com/ru/funpay?category=top_sellers&filter=all_time&page={page}"
         
-        for attempt in range(1, 6):
-            use_good = False
-            if good_proxies:
-                if attempt >= 3:
-                    use_good = True
-                elif random.random() < 0.5:
-                    use_good = True
-                    
-            if use_good:
+        for attempt in range(1, 4):
+            # 1-я попытка: пробуем проверенный для RMTHub прокси (если есть)
+            # Со 2-й попытки (или если проверенных нет) — прямой IP, на котором RMTHub отвечает за 0.5с
+            if attempt == 1 and good_proxies:
                 available_good = [p for p in good_proxies if p in pool]
-                if available_good:
-                    proxy_url = random.choice(available_good)
-                else:
-                    proxy_url = random.choice(pool) if pool else None
+                proxy_url = random.choice(available_good) if available_good else None
+            elif attempt == 1 and pool:
+                proxy_url = random.choice(pool)
             else:
-                proxy_url = random.choice(pool) if pool else None
+                proxy_url = None
                 
             browser = get_browser_for_proxy(proxy_url) if proxy_url else "chrome120"
             proxies_dict = {"http": proxy_url, "https": proxy_url} if proxy_url else None
             
             try:
-                async with requests.AsyncSession(proxies=proxies_dict, impersonate=browser, timeout=10.0) as session:
+                async with requests.AsyncSession(proxies=proxies_dict, impersonate=browser, timeout=8.0) as session:
                     resp = await session.get(url)
                     if resp.status_code == 200:
-                        mark_proxy(proxy_url, 'good', base_dir, good_proxies, bad_proxies, pool)
+                        if proxy_url:
+                            mark_proxy(proxy_url, 'good', base_dir, good_proxies, bad_proxies, pool)
                         soup = BeautifulSoup(resp.text, 'html.parser')
                         links = soup.find_all('a', href=re.compile(r'^/ru/funpay/\d+$'))
                         
@@ -83,18 +81,21 @@ async def fetch_page(page: int, pool: list, good_proxies: set, bad_proxies: set,
                         logger.info(f"Страница {page} успешно загружена (Найдено {len(user_ids)} чел)")
                         return user_ids
                     elif resp.status_code in [403, 429]:
-                        mark_proxy(proxy_url, 'bad', base_dir, good_proxies, bad_proxies, pool)
-                        logger.warning(f"Страница {page} заблокирована {resp.status_code} (Попытка {attempt}/5)")
+                        if proxy_url:
+                            mark_proxy(proxy_url, 'bad', base_dir, good_proxies, bad_proxies, pool)
+                        logger.warning(f"Страница {page} заблокирована {resp.status_code} (Попытка {attempt}/3)")
                     else:
-                        mark_proxy(proxy_url, 'bad', base_dir, good_proxies, bad_proxies, pool)
-                        logger.warning(f"Страница {page} получила статус {resp.status_code} (Попытка {attempt}/5)")
+                        if proxy_url:
+                            mark_proxy(proxy_url, 'bad', base_dir, good_proxies, bad_proxies, pool)
+                        logger.warning(f"Страница {page} получила статус {resp.status_code} (Попытка {attempt}/3)")
             except Exception as e:
-                mark_proxy(proxy_url, 'bad', base_dir, good_proxies, bad_proxies, pool)
-                logger.debug(f"Ошибка прокси при загрузке страницы {page}: {e}")
+                if proxy_url:
+                    mark_proxy(proxy_url, 'bad', base_dir, good_proxies, bad_proxies, pool)
+                logger.debug(f"Ошибка при загрузке страницы {page} (попытка {attempt}/3): {e}")
             
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             
-        logger.error(f"❌ Страница {page} не загрузилась после 5 попыток.")
+        logger.error(f"❌ Страница {page} не загрузилась после 3 попыток.")
         return []
 
 async def worker(queue: asyncio.Queue, pool: list, good_proxies: set, bad_proxies: set, base_dir: str, results: list, sem: asyncio.Semaphore, failed_pages: list):
@@ -129,7 +130,7 @@ async def main(target_count: int = None, use_failed_only: bool = False):
     if not pages_to_load:
         if target_count is None:
             try:
-                ans = input("Сколько топ-продавцов вы хотите собрать с RMTHub? (Например: 200): ")
+                ans = await asyncio.to_thread(input, "Сколько топ-продавцов вы хотите собрать с RMTHub? (Например: 200): ")
                 target_count = int(ans) if ans.strip().isdigit() else 200
             except Exception:
                 target_count = 200

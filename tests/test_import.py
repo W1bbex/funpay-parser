@@ -5,12 +5,14 @@ from funpay_analytics.storage.db import init_db
 from funpay_analytics.normalize.extract_own_orders import import_orders
 
 @pytest.fixture(autouse=True)
-def setup_test_db():
+def setup_test_db(tmp_path):
     import funpay_analytics.storage.db as db_module
     original_db_path = db_module.DB_PATH
-    import tempfile
-    fd, temp_db = tempfile.mkstemp()
-    os.close(fd)
+    original_data_dir = os.environ.get("FUNPAY_DATA_DIR")
+    
+    temp_db = str(tmp_path / "test_import.sqlite3")
+    temp_data_dir = str(tmp_path / "test_data")
+    os.environ["FUNPAY_DATA_DIR"] = temp_data_dir
     
     db_module.DB_PATH = temp_db
     init_db()
@@ -18,10 +20,10 @@ def setup_test_db():
     yield
     
     db_module.DB_PATH = original_db_path
-    try:
-        os.remove(temp_db)
-    except:
-        pass
+    if original_data_dir is not None:
+        os.environ["FUNPAY_DATA_DIR"] = original_data_dir
+    else:
+        os.environ.pop("FUNPAY_DATA_DIR", None)
 
 def test_import_mock_html(tmp_path):
     mock_html = b'''MIME-Version: 1.0

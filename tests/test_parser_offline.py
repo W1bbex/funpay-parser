@@ -201,8 +201,9 @@ async def run_test_disable_filter(mock_reviews_parser_class):
     assert "444" in ids
     assert "555" in ids
 
+@patch("parser.asyncio.sleep")
 @patch("parser.ReviewsParser")
-async def run_test_pagination(mock_reviews_parser_class):
+async def run_test_pagination(mock_reviews_parser_class, mock_sleep):
     html_profile = """<span class="mr4">TestSeller</span>"""
 
     session = MockSession(
@@ -249,3 +250,48 @@ async def run_test_pagination(mock_reviews_parser_class):
     assert reviews[1]['date'] == "Год назад"
     
     assert session.post_call_count == 1
+
+@patch("parser.ReviewsParser")
+def test_parser_max_reviews_limit(mock_reviews_parser_class):
+    async def run():
+        html_profile = """
+        <html><body>
+        <span class="mr4">TestSeller</span>
+        </body></html>
+        """
+        session = MockSession(
+            get_responses={"https://funpay.com/users/999/": MockResponse(html_profile)},
+            post_responses=[MockResponse("post1"), MockResponse("post2")]
+        )
+        mock_batch1 = MagicMock()
+        mock_batch1.user_id = "999"
+        mock_batch1.next_review_id = "111"
+        r1 = MagicMock(); r1.category_str = "Steam"; r1.order_total.value = 100.0
+        r1.date_text = "Сегодня"; r1.rating = 5; r1.text = "1"; r1.reply = None
+        mock_batch1.reviews = [r1]
+
+        mock_batch2 = MagicMock()
+        mock_batch2.user_id = "999"
+        mock_batch2.next_review_id = "222"
+        r2 = MagicMock(); r2.category_str = "Steam"; r2.order_total.value = 200.0
+        r2.date_text = "Вчера"; r2.rating = 5; r2.text = "2"; r2.reply = None
+        mock_batch2.reviews = [r2]
+
+        mock_batch3 = MagicMock()
+        mock_batch3.user_id = "999"
+        mock_batch3.next_review_id = None
+        r3 = MagicMock(); r3.category_str = "Steam"; r3.order_total.value = 300.0
+        r3.date_text = "Месяц назад"; r3.rating = 5; r3.text = "3"; r3.reply = None
+        mock_batch3.reviews = [r3]
+
+        m1 = MagicMock(); m1.parse.return_value = mock_batch1
+        m2 = MagicMock(); m2.parse.return_value = mock_batch2
+        m3 = MagicMock(); m3.parse.return_value = mock_batch3
+        mock_reviews_parser_class.side_effect = [m1, m2, m3]
+
+        # Requesting max_reviews=1 should stop after first batch
+        res = await parse_profile(session, "999", max_reviews=1)
+        assert res["total_reviews"] == 1
+        assert session.post_call_count == 0
+
+    asyncio.run(run())

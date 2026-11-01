@@ -6,16 +6,18 @@ from bs4 import BeautifulSoup
 import hashlib
 from decimal import Decimal, ROUND_HALF_UP
 import gzip
-import shutil
 
 from funpay_analytics.storage.db import get_db
 
 def save_raw_snapshot(source_type, content_bytes, extension="html"):
     content_sha256 = hashlib.sha256(content_bytes).hexdigest()
     
-    # Path relative to project root / data / raw / source_type
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-    raw_dir = os.path.join(base_dir, 'data', 'raw', source_type)
+    # Path relative to project root / data / raw / source_type or overridden by env
+    data_dir = os.environ.get("FUNPAY_DATA_DIR")
+    if not data_dir:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+        data_dir = os.path.join(base_dir, 'data')
+    raw_dir = os.path.join(data_dir, 'raw', source_type)
     os.makedirs(raw_dir, exist_ok=True)
     
     file_name = f"{content_sha256}.{extension}.gz"
@@ -26,7 +28,7 @@ def save_raw_snapshot(source_type, content_bytes, extension="html"):
         temp_path = file_path + ".tmp"
         with gzip.open(temp_path, 'wb') as f:
             f.write(content_bytes)
-        os.rename(temp_path, file_path) # Atomic write
+        os.replace(temp_path, file_path) # Atomic write
         
     return content_sha256, compressed_path_relative
 
@@ -42,9 +44,19 @@ def parse_mhtml(file_path):
     for part in msg.walk():
         if part.get_content_type() == 'text/html':
             raw_bytes = part.get_payload(decode=True)
-            html_part = raw_bytes.decode('utf-8', errors='replace')
-            break
+            if raw_bytes:
+                html_part = raw_bytes.decode('utf-8', errors='replace')
+                break
             
+    if not html_part:
+        # Fallback: support plain .html files
+        try:
+            decoded = file_bytes.decode('utf-8', errors='replace')
+            if '<a class="tc-item"' in decoded or '<html' in decoded.lower():
+                html_part = decoded
+        except Exception:
+            pass
+
     if not html_part:
         raise ValueError("В MHTML не найдена HTML часть")
         
@@ -64,11 +76,11 @@ def extract_orders(soup):
             if match:
                 order_id = match.group(1)
         
-        # Парсим реальную цену продавца через Decimal
+        # Парсим реальную цену продавца через Decimal с поддержкой неразрывных пробелов \xa0
         price_div = item.find("div", class_="tc-seller-sum")
         real_price_minor = None
         if price_div:
-            price_text = price_div.text.replace(" ", "").replace(",", ".")
+            price_text = re.sub(r'[\s\xa0]', '', price_div.text).replace(",", ".")
             match = re.search(r'([\d.]+)', price_text)
             if match:
                 try:
@@ -178,19 +190,20 @@ def import_orders(file_path, allow_partial=False):
             raise e
 
 def main():
+    import argparse
     import sys
-    if len(sys.argv) > 1:
-        path = sys.argv[1]
-    else:
-        print("Использование: python extract_own_orders.py <path>")
-        sys.exit(1)
+    
+    parser = argparse.ArgumentParser(description="Импорт собственных заказов FunPay")
+    parser.add_argument("path", help="Путь к файлу .html или .mhtml")
+    parser.add_argument("--allow-partial", action="store_true", help="Пропускать невалидные строки вместо срыва всей транзакции")
+    args = parser.parse_args()
         
-    if not os.path.exists(path):
-        print(f"Файл не найден: {path}")
+    if not os.path.exists(args.path):
+        print(f"Файл не найден: {args.path}")
         sys.exit(1)
         
     try:
-        inserted = import_orders(path)
+        inserted = import_orders(args.path, allow_partial=args.allow_partial)
         print(f"Успешно импортировано {inserted} заказов.")
     except Exception as e:
         print(f"Критическая ошибка импорта: {e}")

@@ -21,12 +21,33 @@ proxies.txt
 good_proxies.txt
 good_*.txt
 bad_*.txt
+failed_*.txt
 queue.txt
 
-# IDE
+# IDE & Virtual Environments
 .idea/
 .vscode/
 .env
+.venv/
+.pytest_cache/
+.pytest_tmp*
+
+# Cache & intermediate runtime files
+market_report*.json
+library*.json
+*.tmp
+
+# Internal agent & audit artifacts (DO NOT PUBLISH)
+CRITIQUE_REPORT.md
+CRITIC*.md
+ARCHITECTURE.md
+PROJECT.md
+IDEAS.md
+AUDIT*.md
+REVIEW*.md
+TODO.md
+AGENTS.md
+CLAUDE.md
 
 # Scratch scripts
 scratch/

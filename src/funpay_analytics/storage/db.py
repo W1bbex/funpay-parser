@@ -9,11 +9,12 @@ DB_PATH = os.environ.get("FUNPAY_DB_PATH", default_db_path)
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), 'migrations')
 
 def get_connection():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")
     return conn
 
 @contextmanager
@@ -26,6 +27,7 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
+        conn.execute("PRAGMA journal_mode = WAL;")
         cursor = conn.cursor()
         
         # We need to create schema_migrations first if it doesn't exist

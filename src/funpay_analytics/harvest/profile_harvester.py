@@ -2,17 +2,19 @@ import os
 import hashlib
 import gzip
 import re
-from datetime import datetime
 from decimal import Decimal
 from bs4 import BeautifulSoup
 from funpayparsers.parsers import ProfilePageParser
 from funpay_analytics.storage.db import get_db
 
-def save_raw_snapshot(source_type, external_id, content_bytes, extension="html"):
+def save_raw_snapshot(source_type, content_bytes, extension="html"):
     content_sha256 = hashlib.sha256(content_bytes).hexdigest()
     
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-    raw_dir = os.path.join(base_dir, 'data', 'raw', source_type)
+    data_dir = os.environ.get("FUNPAY_DATA_DIR")
+    if not data_dir:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+        data_dir = os.path.join(base_dir, 'data')
+    raw_dir = os.path.join(data_dir, 'raw', source_type)
     os.makedirs(raw_dir, exist_ok=True)
     
     file_name = f"{content_sha256}.{extension}.gz"
@@ -23,11 +25,11 @@ def save_raw_snapshot(source_type, external_id, content_bytes, extension="html")
         temp_path = file_path + ".tmp"
         with gzip.open(temp_path, 'wb') as f:
             f.write(content_bytes)
-        os.rename(temp_path, file_path) 
+        os.replace(temp_path, file_path) 
         
     return content_sha256, compressed_path_relative
 
-def parse_profile(html_content, external_id):
+def parse_profile(html_content, external_id=None):
     parser = ProfilePageParser(html_content)
     profile_data = parser.parse()
     
@@ -38,7 +40,7 @@ def parse_profile(html_content, external_id):
         a_tag = c.find('a')
         if a_tag and 'href' in a_tag.attrs:
             href = a_tag['href']
-            m = re.search(r'/lots/(\d+)/', href)
+            m = re.search(r'/(?:lots|chips)/(\d+)/', href)
             if m:
                 cat_id = int(m.group(1))
                 category_names[cat_id] = c.text.strip()
@@ -58,7 +60,7 @@ def import_profile_from_file(file_path):
     if not seller_id:
         raise ValueError("Не удалось определить ID продавца из HTML")
         
-    content_sha256, compressed_path = save_raw_snapshot('profile', str(seller_id), file_bytes, 'html')
+    content_sha256, compressed_path = save_raw_snapshot('profile', file_bytes, 'html')
     
     profile_data, category_names = parse_profile(html_content, str(seller_id))
     
@@ -77,7 +79,10 @@ def import_profile_from_file(file_path):
                 SELECT id FROM raw_snapshots 
                 WHERE source_type=? AND external_id=? AND content_sha256=?
             ''', ('profile', str(seller_id), content_sha256))
-            snapshot_id = cursor.fetchone()[0]
+            row = cursor.fetchone()
+            if not row:
+                raise RuntimeError(f"Не удалось получить ID сохраненного raw_snapshot для {seller_id}")
+            snapshot_id = row[0]
             
             username = profile_data.username
             status = profile_data.status_text
@@ -106,7 +111,7 @@ def import_profile_from_file(file_path):
                         title_raw = offer.title
                         
                         visible_price_minor = None
-                        if offer.price:
+                        if offer.price and offer.price.value is not None:
                             visible_price_minor = int((Decimal(str(offer.price.value)) * Decimal('100')).to_integral_value())
                             
                         data_s_decimal = None
@@ -126,6 +131,12 @@ def import_profile_from_file(file_path):
                                 lot_id, seller_id, native_section_id, native_section_name,
                                 title_raw, visible_price_minor, data_s_decimal, auto_delivery, raw_snapshot_id
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(raw_snapshot_id, lot_id) DO UPDATE SET
+                                native_section_name=excluded.native_section_name,
+                                title_raw=excluded.title_raw,
+                                visible_price_minor=excluded.visible_price_minor,
+                                data_s_decimal=excluded.data_s_decimal,
+                                auto_delivery=excluded.auto_delivery
                         ''', (
                             lot_id, seller_id, str(cat_id), native_section_name, title_raw,
                             visible_price_minor, data_s_decimal, offer.auto_delivery, snapshot_id

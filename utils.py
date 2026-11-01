@@ -1,7 +1,5 @@
 import os
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
 import json
-import asyncio
 import sys
 from loguru import logger
 
@@ -14,21 +12,25 @@ logger.add(
 os.makedirs("logs", exist_ok=True)
 logger.add("logs/parser.log", rotation="10 MB", retention="7 days", compression="zip")
 
-def load_proxies():
-    """Загружает и форматирует прокси из файлов proxies.txt и good_proxies.txt"""
-    raw_proxies = set()
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+def load_proxies(base_dir=None):
+    """Загружает и форматирует прокси из файлов proxies.txt и good_proxies.txt с сохранением порядка."""
+    if not base_dir:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
     good_path = os.path.join(base_dir, "good_proxies.txt")
     if os.path.exists(good_path) and os.path.getsize(good_path) > 0:
         target_file = good_path
     else:
         target_file = os.path.join(base_dir, "proxies.txt")
         
+    seen = set()
+    raw_proxies = []
     if os.path.exists(target_file):
         with open(target_file, 'r', encoding='utf-8') as f:
             for line in f:
-                if line.strip():
-                    raw_proxies.add(line.strip())
+                line = line.strip()
+                if line and not line.startswith('#') and line not in seen:
+                    seen.add(line)
+                    raw_proxies.append(line)
         
     formatted_proxies = []
     for p in raw_proxies:
@@ -58,8 +60,14 @@ def hide_proxy_credentials(url: str) -> str:
         return "None"
     if '@' in url:
         return url.split('@')[-1]
+    parts = url.split(':')
+    if len(parts) == 4 and not url.startswith(('http://', 'https://', 'socks')):
+        return f"{parts[0]}:{parts[1]}"
     if '://' in url:
-        return url.split('://')[-1]
+        clean = url.split('://')[-1]
+        if '@' in clean:
+            return clean.split('@')[-1]
+        return clean
     return url
 
 def atomic_write_json(filepath: str, data: dict):

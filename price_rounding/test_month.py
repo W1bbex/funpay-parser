@@ -31,7 +31,7 @@ def main():
     sales_data = {}
     try:
         from pathlib import Path
-with open(Path(__file__).resolve().parent / "parsed_sales.json", "r", encoding="utf-8") as f:
+        with open(Path(__file__).resolve().parent / "parsed_sales.json", "r", encoding="utf-8") as f:
             sales = json.load(f)
             sales_data = {("#" + str(k) if not str(k).startswith("#") else str(k)): float(v) for k, v in sales.items()}
     except Exception as e:
@@ -39,7 +39,8 @@ with open(Path(__file__).resolve().parent / "parsed_sales.json", "r", encoding="
         return
 
     # Загружаем MHTML и парсим отзывы
-    mhtml_path = r"C:\Users\w1bbex\Desktop\Пользователь W1bbex _ FunPay.mhtml"
+    mhtml_env = os.environ.get("FUNPAY_PROFILE_MHTML")
+    mhtml_path = mhtml_env if mhtml_env else str(Path(__file__).resolve().parent / "sample_profile.mhtml")
     try:
         with open(mhtml_path, 'rb') as f:
             msg = email.message_from_binary_file(f, policy=policy.default)
@@ -122,10 +123,12 @@ with open(Path(__file__).resolve().parent / "parsed_sales.json", "r", encoding="
                 recent_naive += rev_price
                 count_recent += 1
 
+    err_naive = ((total_naive - total_real) / total_real * 100) if total_real > 0 else 0.0
+    err_est = ((total_estimated - total_real) / total_real * 100) if total_real > 0 else 0.0
     print("\n--- РЕЗУЛЬТАТЫ ЗА ВСЁ ВРЕМЯ ---")
     print(f"Отзывов: {count_all}")
-    print(f"НАИВНЫЙ ПАРСИНГ (Цена = Отзыв): {total_naive:.2f} ₽ (Ошибка: {((total_naive - total_real) / total_real * 100):.2f}%)")
-    print(f"ОЦЕНКА ПАРСЕРА (Среднее):       {total_estimated:.2f} ₽ (Ошибка: {((total_estimated - total_real) / total_real * 100):.2f}%)")
+    print(f"НАИВНЫЙ ПАРСИНГ (Цена = Отзыв): {total_naive:.2f} ₽ (Ошибка: {err_naive:.2f}%)")
+    print(f"ОЦЕНКА ПАРСЕРА (Среднее):       {total_estimated:.2f} ₽ (Ошибка: {err_est:.2f}%)")
     print(f"РЕАЛЬНАЯ ВЫРУЧКА (Из базы):     {total_real:.2f} ₽")
 
 if __name__ == "__main__":

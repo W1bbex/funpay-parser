@@ -61,7 +61,8 @@ def parse_reviews_from_html(html):
 def main():
     base_dir = os.path.dirname(__file__)
     sales_file = os.path.join(base_dir, "parsed_sales.json")
-    mhtml_file = r"C:\Users\w1bbex\Desktop\Пользователь W1bbex _ FunPay.mhtml"
+    mhtml_env = os.environ.get("FUNPAY_PROFILE_MHTML")
+    mhtml_file = mhtml_env if mhtml_env else os.path.join(base_dir, "sample_profile.mhtml")
     
     if not os.path.exists(sales_file):
         logger.error("Файл parsed_sales.json не найден! Сначала запустите parse_sales_html.py")
@@ -107,7 +108,7 @@ def main():
         final_report[rev_str] = {
             "min_real_price": real_prices_list[0] if real_prices_list else 0.0,
             "max_real_price": real_prices_list[-1] if real_prices_list else 0.0,
-            "unique_variations_count": len(real_prices_list),
+            "unique_variations_count": len(set(real_prices_list)),
             "all_real_prices": real_prices_list
         }
         

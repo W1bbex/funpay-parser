@@ -2,10 +2,10 @@ import asyncio
 import json
 import random
 import os
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-import sys
+# Base directory resolved dynamically
+# import sys
 import time
-from pathlib import Path
+# from pathlib import Path
 from decimal import Decimal
 from urllib.parse import urlparse, parse_qs
 
@@ -31,6 +31,8 @@ def get_smart_delay(is_proxy=False):
             return random.uniform(2.0, 4.0)
 
 def get_review_interval(price: float) -> tuple[Decimal, Decimal] | None:
+    if price <= 0:
+        return None
     if price % 1000 == 0 and price >= 2000:
         p = Decimal(str(price))
         return (p - Decimal('500'), p + Decimal('500'))
@@ -53,7 +55,26 @@ def is_candidate(lot_price: float, lower: Decimal, upper: Decimal) -> bool:
     q_min = max(Decimal('1'), math.ceil(lower / lp))
     return (lp * q_min) < upper
 
-async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str = None, user_agent: str = None) -> dict:
+def parse_lot_price(price_div) -> float:
+    if not price_div:
+        return 0.0
+    raw_p = price_div.text.replace('\xa0', '').replace(' ', '')
+    if ',' in raw_p and '.' in raw_p:
+        raw_p = raw_p.replace('.', '').replace(',', '.')
+    else:
+        raw_p = raw_p.replace(',', '.')
+    price_str = re.sub(r'[^\d.]', '', raw_p)
+    if price_str.count('.') > 1:
+        parts = price_str.split('.')
+        price_str = ''.join(parts[:-1]) + '.' + parts[-1]
+    if price_str:
+        try:
+            return float(price_str)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str = None, user_agent: str = None, max_reviews: int = None) -> dict:
     if not user_agent:
         user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     url = f"https://funpay.com/users/{user_id}/"
@@ -67,7 +88,7 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     }
     
-    proxy_info = f" (через прокси {proxy.split('@')[-1]})" if proxy else ""
+    proxy_info = f" (через прокси {proxy.split('@')[-1]})" if proxy else " (напрямую без прокси)"
     logger.info(f"[ID {user_id}] Начинаем парсинг{proxy_info}...")
     
     try:
@@ -77,7 +98,11 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
         response.raise_for_status()
         html_text = response.text
     except Exception as e:
-        logger.error(f"[ID {user_id}] Ошибка доступа: {e}")
+        err_msg = str(e)
+        if "curl: (35)" in err_msg or "TLS connect error" in err_msg:
+            logger.error(f"[ID {user_id}] Ошибка TLS (35): Соединение с FunPay сброшено/заблокировано (ТСПУ / Cloudflare). Требуется рабочий прокси.")
+        else:
+            logger.error(f"[ID {user_id}] Ошибка доступа: {e}")
         return None
 
     soup = BeautifulSoup(html_text, 'html.parser')
@@ -111,11 +136,7 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
                     continue
                 
                 price_div = a.find('div', class_='tc-price')
-                price = 0.0
-                if price_div:
-                    price_str = re.sub(r'[^\d.]', '', price_div.text.replace(' ', '').replace(',', '.'))
-                    if price_str:
-                        price = float(price_str)
+                price = parse_lot_price(price_div)
                 
                 if price <= 0:
                     logger.warning(f"[ID {user_id}] Пропущен лот с некорректной ценой (ID: {lot_id})")
@@ -174,6 +195,10 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
     page = 2
     
     while next_id:
+        if max_reviews and total_reviews >= max_reviews:
+            logger.info(f"[ID {user_id}] Достигнут запрошенный лимит {max_reviews:,} отзывов. Завершаем сбор.")
+            break
+
         post_data = {
             'user_id': actual_user_id,
             'continue': next_id,
@@ -210,7 +235,10 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
         next_batch = ReviewsParser(html_text2).parse()
         added = process_batch(next_batch.reviews)
         
-        if added == 0:
+        if page % 5 == 0 or (max_reviews and total_reviews >= max_reviews):
+            logger.info(f"[ID {user_id}] Собрано {total_reviews:,} отзывов (страница {page})...")
+            
+        if added == 0 or (max_reviews and total_reviews >= max_reviews):
             break
             
         next_id = next_batch.next_review_id
@@ -283,26 +311,33 @@ IMPERSONATES = [
 
 async def ping_proxy_curl(proxy_url: str, sem: asyncio.Semaphore) -> dict:
     """Пингует прокси с использованием curl_cffi."""
-    async with sem:
-        proxies = {"http": proxy_url, "https": proxy_url}
-        browser = get_browser_for_proxy(proxy_url)
-        try:
+    try:
+        async with sem:
+            proxies = {"http": proxy_url, "https": proxy_url}
+            browser = get_browser_for_proxy(proxy_url)
             start = time.time()
-            async with requests.AsyncSession(proxies=proxies, impersonate=browser, timeout=5.0) as session:
+            async with requests.AsyncSession(proxies=proxies, impersonate=browser, timeout=10.0) as session:
                 resp = await session.get("https://funpay.com", cookies={'cy': 'rub'})
                 if resp.status_code == 200:
                     return {'url': proxy_url, 'ping': time.time() - start, 'name': hide_proxy_credentials(proxy_url)}
-        except Exception:
-            pass
-        return None
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        raise
+    except Exception:
+        pass
+    return None
 
 async def ping_and_rank(proxy_list: list) -> list:
     logger.info("[Этап 1] Калибровка прокси-серверов...")
-    sem = asyncio.Semaphore(50)
-    tasks = [ping_proxy_curl(p, sem) for p in proxy_list]
-    results = await asyncio.gather(*tasks)
+    sem = asyncio.Semaphore(150)
+    tasks = [asyncio.create_task(ping_proxy_curl(p, sem)) for p in proxy_list]
+    try:
+        results = await asyncio.gather(*tasks)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        for t in tasks:
+            t.cancel()
+        raise
     
-    valid = [r for r in results if r is not None and r['ping'] <= 5.0]
+    valid = [r for r in results if r is not None and r['ping'] <= 10.0]
     valid.sort(key=lambda x: x['ping'])
     valid.append({'url': None, 'ping': 999.0, 'name': 'Родной IP'})
     
@@ -313,7 +348,9 @@ async def ping_and_rank(proxy_list: list) -> list:
         
     return valid
 
-async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyncio.Queue, results: list, library: dict, stats: dict):
+async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyncio.Queue, results: list, library: dict, stats: dict, retry_map: dict = None):
+    if retry_map is None:
+        retry_map = {}
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -323,7 +360,7 @@ async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyn
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     consecutive_errors = 0
     
-    browser = random.choice(IMPERSONATES)
+    browser = get_browser_for_proxy(proxy_url)
     
     async with requests.AsyncSession(proxies=proxies, impersonate=browser, timeout=25.0, cookies={'cy': 'rub'}) as client:
         while True:
@@ -338,7 +375,6 @@ async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyn
             elapsed = time.time() - start_time
             
             if res:
-                results.append(res)
                 reviews = res.get('total_reviews', 0)
                 rps = reviews / elapsed if elapsed > 0 else 0
                 logger.info(f"[ID {user_id}] ⚡ Скорость: {rps:.1f} о/с (Всего: {elapsed:.1f} с)")
@@ -356,8 +392,14 @@ async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyn
                 p_url = proxy_url if proxy_url else 'Локальный IP'
                 stats['proxy_success'][p_url] = stats['proxy_success'].get(p_url, 0) + 1
             else:
-                logger.warning(f"[Воркер {worker_id} | IP: {ip_name}] Ошибка. Возвращаем продавца {user_id} в очередь.")
-                queue.put_nowait(user_id)
+                retries = retry_map.get(user_id, 0) + 1
+                retry_map[user_id] = retries
+                if retries < 3:
+                    logger.warning(f"[Воркер {worker_id} | IP: {ip_name}] Ошибка (попытка {retries}/3). Возвращаем продавца {user_id} в очередь.")
+                    queue.put_nowait(user_id)
+                else:
+                    logger.error(f"[Воркер {worker_id} | IP: {ip_name}] Продавец {user_id} превысил лимит попыток ({retries}). Пропускаем.")
+                    library[user_id] = {'status': 'failed', 'error': 'max_retries_exceeded'}
                 consecutive_errors += 1
                 stats['errors'] += 1
                 
@@ -377,7 +419,7 @@ async def background_library_saver(library: dict):
     """Фоновая задача для периодического сохранения library_v2.json"""
     while True:
         await asyncio.sleep(30)
-        atomic_write_json('library_v2.json', library)
+        await asyncio.to_thread(atomic_write_json, 'library_v2.json', library.copy())
         logger.debug("Фоновое сохранение library_v2.json выполнено.")
 
 async def mass_parse(library: dict, stats: dict):
@@ -392,8 +434,10 @@ async def mass_parse(library: dict, stats: dict):
             if not line:
                 continue
             parts = line.split(':')
-            uid = parts[0]
-            count = int(parts[1]) if len(parts) > 1 else 0
+            uid = parts[0].strip()
+            if not uid.isdigit():
+                continue
+            count = int(parts[1].strip()) if len(parts) > 1 and parts[1].strip().isdigit() else 0
             all_sellers_dict[uid] = count
             
     all_sellers = [{'uid': u, 'count': c} for u, c in all_sellers_dict.items()]
@@ -426,24 +470,34 @@ async def mass_parse(library: dict, stats: dict):
         
     saver_task = asyncio.create_task(background_library_saver(library))
         
+    retry_map = {}
     workers = []
     for i, ip_info in enumerate(available_ips):
         if queue.empty():
             break
             
         worker_task = asyncio.create_task(
-            parse_worker(i+1, ip_info['name'], ip_info['url'], queue, results, library, stats)
+            parse_worker(i+1, ip_info['name'], ip_info['url'], queue, results, library, stats, retry_map)
         )
         workers.append(worker_task)
         
-    await asyncio.gather(*workers)
+    try:
+        await asyncio.gather(*workers)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        for w in workers:
+            w.cancel()
+        raise
     
     saver_task.cancel()
+    try:
+        await saver_task
+    except asyncio.CancelledError:
+        pass
     atomic_write_json('library_v2.json', library)
     
     return results
 
-def main():
+async def main_async():
     logger.info("=== ЗАПУСК МАССОВОГО ПАРСЕРА ===")
     
     library_path = 'library_v2.json'
@@ -462,8 +516,8 @@ def main():
     global_start = time.time()
     
     try:
-        asyncio.run(mass_parse(library, stats))
-    except KeyboardInterrupt:
+        await mass_parse(library, stats)
+    except (KeyboardInterrupt, asyncio.CancelledError):
         logger.warning("Парсинг прерван пользователем (Ctrl+C). Прогресс сохранен.")
         atomic_write_json('library_v2.json', library)
     finally:
@@ -512,6 +566,9 @@ def main():
         logger.info(f"Самая отзывчивая категория:    {best_cat_count}")
         logger.info(f"Самый стабильный прокси:       {hide_proxy_credentials(best_proxy)}")
         logger.info("========================================")
+
+def main():
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     if os.name == 'nt':
