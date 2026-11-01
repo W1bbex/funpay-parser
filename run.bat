@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 > nul
-title FunPay Analytics ^& Market Intelligence Engine
+title FunPay Parser ^& Market Intelligence Engine
 cd /d "%~dp0"
 
 set "PYTHON_CMD=python"

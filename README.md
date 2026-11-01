@@ -1,4 +1,4 @@
-# FunPay Analytics & Market Intelligence Engine
+# FunPay Parser — быстрый асинхронный парсер и скрапер FunPay
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python" alt="Python Version" />
@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
 </p>
 
-**FunPay Analytics** — это высокопроизводительный, отказоустойчивый асинхронный ETL-пайплайн и аналитический движок для сбора, обратного математического сопоставления (`Reverse Lot Matching`) и глубокого анализа рыночных данных маркетплейса **FunPay**.
+**FunPay Parser** — это высокопроизводительный, отказоустойчивый асинхронный парсер, скрапер и аналитический движок для сбора отзывов, активных лотов, калибровки прокси и оценки рыночных объемов маркетплейса **FunPay**.
 
 Фреймворк спроектирован для бесперебойной работы в режиме **24/7 под высокой нагрузкой**: при падении прокси или блокировках воркеры самовосстанавливаются, задачи возвращаются в очередь с контролем попыток, а состояние базы и сырых снимков сохраняется атомарно без риска повреждения данных.
 
@@ -137,8 +137,8 @@ sequenceDiagram
 
 ### Вариант 2: Ручная установка и CLI
 ```bash
-git clone https://github.com/W1bbex/funpay-analytics.git
-cd funpay-analytics
+git clone https://github.com/W1bbex/funpay-parser.git
+cd funpay-parser
 pip install -r requirements.txt
 
 # Запуск интерактивного TUI-комбайна
