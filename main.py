@@ -34,7 +34,7 @@ from rich.theme import Theme
 
 from curl_cffi import requests
 from utils import atomic_write_json, get_browser_for_proxy, extract_user_id
-from parser import parse_profile, ping_and_rank, load_proxies
+from parser import parse_profile, ping_and_rank, load_proxies, FUNPAY_COOKIES
 import fetch_ids
 
 FP_BLUE = "#2375B7"
@@ -261,7 +261,7 @@ async def run_single_seller_parse():
                 console.print(f"[{FP_BLUE}]Повтор с резервным прокси ({idx + 1}/{len(proxy_candidates)})...[/{FP_BLUE}]")
 
             try:
-                async with requests.AsyncSession(impersonate=browser, proxies=proxy_dict, timeout=30.0) as client:
+                async with requests.AsyncSession(impersonate=browser, proxies=proxy_dict, timeout=30.0, cookies=FUNPAY_COOKIES) as client:
                     with Progress(SpinnerColumn(style=FP_BLUE), TextColumn(f"[bold {FP_WHITE}]Сбор профиля, активных лотов и отзывов..."), transient=True) as progress:
                         progress.add_task("parse", total=None)
                         res = await parse_profile(client, user_id, proxy=proxy, user_agent=headers['User-Agent'], max_reviews=max_reviews)

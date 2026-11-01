@@ -175,3 +175,9 @@ def test_extract_user_id_from_url_or_raw():
     assert extract_user_id("Dipper") is None
     assert extract_user_id("not-a-valid-input") is None
     assert extract_user_id("") is None
+
+# 13. Regression test: FUNPAY_COOKIES guarantees cy=rub and locale=ru
+def test_funpay_cookies_currency_rub():
+    from parser import FUNPAY_COOKIES
+    assert FUNPAY_COOKIES.get("cy") == "rub"
+    assert FUNPAY_COOKIES.get("locale") == "ru"

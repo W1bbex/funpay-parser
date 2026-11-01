@@ -17,6 +17,8 @@ import math
 
 from utils import load_proxies, atomic_write_json, atomic_write_lines, logger, get_browser_for_proxy, hide_proxy_credentials
 
+FUNPAY_COOKIES = {'cy': 'rub', 'locale': 'ru'}
+
 def get_smart_delay(is_proxy=False):
     chance = random.random()
     if is_proxy:
@@ -92,7 +94,7 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
     logger.info(f"[ID {user_id}] Начинаем парсинг{proxy_info}...")
     
     try:
-        response = await client.get(url, headers=headers)
+        response = await client.get(url, headers=headers, cookies=FUNPAY_COOKIES)
         if response.status_code == 429:
             raise Exception("429 Too Many Requests")
         response.raise_for_status()
@@ -212,7 +214,7 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
         for attempt in range(4):
             await asyncio.sleep(get_smart_delay(bool(proxy)))
             try:
-                r2 = await client.post('https://funpay.com/users/reviews', data=post_data, headers=post_headers)
+                r2 = await client.post('https://funpay.com/users/reviews', data=post_data, headers=post_headers, cookies=FUNPAY_COOKIES)
                 if r2.status_code == 429:
                     raise Exception("429 Too Many Requests")
                 r2.raise_for_status()
@@ -317,7 +319,7 @@ async def ping_proxy_curl(proxy_url: str, sem: asyncio.Semaphore) -> dict:
             browser = get_browser_for_proxy(proxy_url)
             start = time.time()
             async with requests.AsyncSession(proxies=proxies, impersonate=browser, timeout=10.0) as session:
-                resp = await session.get("https://funpay.com", cookies={'cy': 'rub'})
+                resp = await session.get("https://funpay.com", cookies=FUNPAY_COOKIES)
                 if resp.status_code == 200:
                     return {'url': proxy_url, 'ping': time.time() - start, 'name': hide_proxy_credentials(proxy_url)}
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -362,7 +364,7 @@ async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyn
     
     browser = get_browser_for_proxy(proxy_url)
     
-    async with requests.AsyncSession(proxies=proxies, impersonate=browser, timeout=25.0, cookies={'cy': 'rub'}) as client:
+    async with requests.AsyncSession(proxies=proxies, impersonate=browser, timeout=25.0, cookies=FUNPAY_COOKIES) as client:
         while True:
             try:
                 user_id = queue.get_nowait()
