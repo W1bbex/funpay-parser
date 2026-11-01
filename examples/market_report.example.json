@@ -1,0 +1,8 @@
+[
+  {
+    "user_id": "example",
+    "total_reviews": 2,
+    "total_earned": 150.0,
+    "categories": {"Пример": {"count": 2, "earned": 150.0}}
+  }
+]
