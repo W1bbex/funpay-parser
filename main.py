@@ -33,7 +33,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.theme import Theme
 
 from curl_cffi import requests
-from utils import atomic_write_json, get_browser_for_proxy
+from utils import atomic_write_json, get_browser_for_proxy, extract_user_id
 from parser import parse_profile, ping_and_rank, load_proxies
 import fetch_ids
 
@@ -227,13 +227,13 @@ async def run_single_seller_parse():
             default="1804150"
         )
         
-        # Поддерживаем как прямой ввод ID, так и ссылки вроде https://funpay.com/users/14273448/
-        match = re.search(r'(?:users/)?(\d+)', user_input.strip())
-        if not match:
-            console.print(f"[bold {FP_WHITE}]❌ В введенной строке не найден цифровой ID пользователя![/bold {FP_WHITE}]")
-            time.sleep(1.5)
+        user_id = extract_user_id(user_input)
+        if not user_id:
+            console.print(f"\n[bold {FP_WHITE}]❌ '{user_input.strip()}' — это текстовый никнейм, а не ID![/bold {FP_WHITE}]")
+            console.print(f"[{FP_BLUE}]На FunPay профили адресуются только по числовому ID пользователя или ссылке.[/{FP_BLUE}]")
+            console.print(f"[{FP_BLUE}]Пример: 14273448 или https://funpay.com/users/14273448/[/{FP_BLUE}]")
+            input("\nНажмите Enter для возврата в меню...")
             return
-        user_id = match.group(1)
 
         limit_raw = Prompt.ask(
             f"[bold {FP_WHITE}]Сколько последних отзывов собрать? ([bold {FP_BLUE}]Enter[/bold {FP_BLUE}] = все, или число, напр. 500)[/bold {FP_WHITE}]",

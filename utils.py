@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import re
 from loguru import logger
 
 # Настройка единого логгера для всех скриптов
@@ -94,3 +95,17 @@ def atomic_write_lines(filepath: str, lines: list):
         logger.error(f"Ошибка при атомарном сохранении файла {filepath}: {e}")
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+def extract_user_id(val: str) -> str | None:
+    """Извлекает ID пользователя FunPay из ввода: числовой ID, ссылка или алиас."""
+    if not val:
+        return None
+    clean = val.strip()
+    if clean.lower() == "w1bbex":
+        return "14273448"
+    if clean.isdigit():
+        return clean
+    m = re.search(r'users/(\d+)', clean)
+    if m:
+        return m.group(1)
+    return None
