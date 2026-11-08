@@ -3,7 +3,7 @@ import json
 import random
 import os
 # Base directory resolved dynamically
-# import sys
+import sys
 import time
 # from pathlib import Path
 from decimal import Decimal
@@ -62,7 +62,11 @@ def parse_lot_price(price_div) -> float:
         return 0.0
     raw_p = price_div.text.replace('\xa0', '').replace(' ', '')
     if ',' in raw_p and '.' in raw_p:
-        raw_p = raw_p.replace('.', '').replace(',', '.')
+        # Determine whether decimal separator is dot (1,250.50) or comma (1.250,50)
+        if raw_p.rfind('.') > raw_p.rfind(','):
+            raw_p = raw_p.replace(',', '')
+        else:
+            raw_p = raw_p.replace('.', '').replace(',', '.')
     else:
         raw_p = raw_p.replace(',', '.')
     price_str = re.sub(r'[^\d.]', '', raw_p)
@@ -90,7 +94,8 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     }
     
-    proxy_info = f" (через прокси {proxy.split('@')[-1]})" if proxy else " (напрямую без прокси)"
+    masked_p = hide_proxy_credentials(proxy) if proxy else None
+    proxy_info = f" (через прокси {masked_p})" if masked_p else " (напрямую без прокси)"
     logger.info(f"[ID {user_id}] Начинаем парсинг{proxy_info}...")
     
     try:
@@ -172,6 +177,8 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
         nonlocal total_reviews
         count = 0
         for review in batch_reviews:
+            if max_reviews and total_reviews >= max_reviews:
+                break
             date = (review.date_text or "").strip()
             category = review.category_str or "Неизвестно"
             price_val = float(review.order_total.value) if review.order_total else 0.0
@@ -227,8 +234,13 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
                     logger.warning(f"[ID {user_id}] Блок 429 на стр {page}. Ждем {delay}с (Попытка {attempt+1}/4)...")
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(f"[ID {user_id}] Ошибка пагинации на стр {page}: {e}")
-                    break
+                    if attempt < 3:
+                        delay = (attempt + 1) * 2
+                        logger.warning(f"[ID {user_id}] Временная ошибка пагинации на стр {page} (попытка {attempt+1}/4): {e}. Повтор через {delay}с...")
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"[ID {user_id}] Исчерпаны попытки пагинации на стр {page}: {e}")
+                        break
                     
         if not success:
             logger.error(f"[ID {user_id}] Не удалось пройти страницу {page} после 4 попыток. Отменяем.")
@@ -307,10 +319,6 @@ async def parse_profile(client: requests.AsyncSession, user_id: str, proxy: str 
         'categories': categories
     }
 
-IMPERSONATES = [
-    "chrome110", "chrome116", "chrome120", "edge101", "safari15_5"
-]
-
 async def ping_proxy_curl(proxy_url: str, sem: asyncio.Semaphore) -> dict:
     """Пингует прокси с использованием curl_cffi."""
     try:
@@ -373,7 +381,11 @@ async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyn
                 
             logger.debug(f"[Воркер {worker_id} | IP: {ip_name}] Взял в работу продавца {user_id}")
             start_time = time.time()
-            res = await parse_profile(client, user_id, proxy=proxy_url, user_agent=ua)
+            try:
+                res = await parse_profile(client, user_id, proxy=proxy_url, user_agent=ua)
+            except Exception as e:
+                logger.error(f"[Воркер {worker_id} | IP: {ip_name}] Неожиданная ошибка при парсинге {user_id}: {e}")
+                res = None
             elapsed = time.time() - start_time
             
             if res:
@@ -408,7 +420,7 @@ async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyn
             queue.task_done()
             
             if consecutive_errors >= 3:
-                logger.error(f"[Воркер {worker_id} | IP: {hide_proxy_credentials(proxy_url)}] Слишком много ошибок подряд (3). Воркер отключается.")
+                logger.error(f"[Воркер {worker_id} | IP: {hide_proxy_credentials(proxy_url)}] Слишком много ошибок подряд (3). Воркер отключается. (Осталось в очереди: {queue.qsize()})")
                 break
             
             if not queue.empty():
@@ -489,13 +501,20 @@ async def mass_parse(library: dict, stats: dict):
         for w in workers:
             w.cancel()
         raise
-    
-    saver_task.cancel()
-    try:
-        await saver_task
-    except asyncio.CancelledError:
-        pass
-    atomic_write_json('library_v2.json', library)
+    finally:
+        saver_task.cancel()
+        try:
+            await saver_task
+        except asyncio.CancelledError:
+            pass
+        atomic_write_json('library_v2.json', library)
+
+    if not queue.empty():
+        unprocessed = queue.qsize()
+        stats['unprocessed_count'] = unprocessed
+        logger.error(f"[ОШИБКА ОЧЕРЕДИ] Все воркеры отключились из-за ошибок, в очереди осталось {unprocessed} необработанных задач! Парсинг не завершён.")
+    else:
+        stats['unprocessed_count'] = 0
     
     return results
 
@@ -567,10 +586,15 @@ async def main_async():
         logger.info(f"Средняя скорость:              {avg_speed:.1f} о/с")
         logger.info(f"Самая отзывчивая категория:    {best_cat_count}")
         logger.info(f"Самый стабильный прокси:       {hide_proxy_credentials(best_proxy)}")
+        if stats.get('unprocessed_count', 0) > 0:
+            logger.error(f"Необработанных продавцов (сбой воркеров): {stats['unprocessed_count']}")
         logger.info("========================================")
+    return stats.get('unprocessed_count', 0) == 0
 
 def main():
-    asyncio.run(main_async())
+    success = asyncio.run(main_async())
+    if not success:
+        sys.exit(1)
 
 if __name__ == "__main__":
     if os.name == 'nt':

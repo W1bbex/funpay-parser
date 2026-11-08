@@ -19,7 +19,7 @@ def save_raw_snapshot(source_type, content_bytes, extension="html"):
     
     file_name = f"{content_sha256}.{extension}.gz"
     file_path = os.path.join(raw_dir, file_name)
-    compressed_path_relative = f"data/raw/{source_type}/{file_name}"
+    compressed_path_relative = os.path.normpath(file_path).replace('\\', '/') if os.environ.get("FUNPAY_DATA_DIR") else f"data/raw/{source_type}/{file_name}"
     
     if not os.path.exists(file_path):
         temp_path = file_path + ".tmp"
@@ -29,7 +29,7 @@ def save_raw_snapshot(source_type, content_bytes, extension="html"):
         
     return content_sha256, compressed_path_relative
 
-def parse_profile(html_content, external_id=None):
+def parse_profile(html_content, _external_id=None):
     parser = ProfilePageParser(html_content)
     profile_data = parser.parse()
     
@@ -102,8 +102,12 @@ def import_profile_from_file(file_path):
             cursor.execute('UPDATE lots SET is_active=0 WHERE seller_id=?', (seller_id,))
             
             inserted_lots = 0
-            for subcategory_type, categories in profile_data.offers.items():
+            for subcategory_type, categories in (profile_data.offers or {}).items():
+                if not categories or not hasattr(categories, "items"):
+                    continue
                 for cat_id, offers_list in categories.items():
+                    if not offers_list:
+                        continue
                     native_section_name = category_names.get(cat_id, "Unknown")
                     
                     for offer in offers_list:

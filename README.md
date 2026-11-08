@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Engine-curl--cffi_TLS_Impersonate-orange?style=for-the-badge" alt="curl-cffi" />
   <img src="https://img.shields.io/badge/Network-Async_Proxy_Pool-green?style=for-the-badge" alt="Proxy Pool" />
   <img src="https://img.shields.io/badge/Storage-SQLite_WAL_%2B_SHA--256_Lake-blueviolet?style=for-the-badge" alt="Storage" />
-  <img src="https://img.shields.io/badge/Tests-Pytest_31_Passed-success?style=for-the-badge&logo=pytest" alt="Pytest" />
+  <img src="https://img.shields.io/badge/Tests-Pytest_43_Passed-success?style=for-the-badge&logo=pytest" alt="Pytest" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
 </p>
 
@@ -24,7 +24,7 @@
 | **Parsing & Normalization** | [`funpayparsers`](https://github.com/funpayhub/funpayparsers) (FunPay Hub), `BeautifulSoup4`, `selectolax`, `lxml`, MIME/MHTML потоковый декодер |
 | **Financial Math Engine** | Интервалы цен через `Decimal`, `Reverse Lot Matching Engine` |
 | **Interactive TUI & Logs** | `Rich` (интерактивные дашборды, таблицы, спиннеры), `Loguru` (ротация логов 10 MB, zip-компрессия, маскирование секретов) |
-| **Quality & Testing** | `pytest` (31 оффлайн-тест: моки сетевого стека, проверка транзакций, регрессионное покрытие) |
+| **Quality & Testing** | `pytest` (43 оффлайн-тестов: моки сетевого стека, проверка транзакций, регрессионное покрытие) |
 
 ---
 

@@ -65,15 +65,13 @@ def hide_proxy_credentials(url: str) -> str:
     if len(parts) == 4 and not url.startswith(('http://', 'https://', 'socks')):
         return f"{parts[0]}:{parts[1]}"
     if '://' in url:
-        clean = url.split('://')[-1]
-        if '@' in clean:
-            return clean.split('@')[-1]
-        return clean
+        return url.split('://')[-1]
     return url
 
 def atomic_write_json(filepath: str, data: dict):
-    """Атомарно сохраняет JSON в файл, предотвращая потерю данных при прерывании процесса."""
-    tmp_path = filepath + ".tmp"
+    """Атомарно сохраняет JSON в файл с уникальным временным файлом, предотвращая гонки на Windows."""
+    import secrets
+    tmp_path = f"{filepath}.tmp.{secrets.token_hex(4)}"
     try:
         with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
@@ -81,7 +79,10 @@ def atomic_write_json(filepath: str, data: dict):
     except Exception as e:
         logger.error(f"Ошибка при атомарном сохранении файла {filepath}: {e}")
         if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 def atomic_write_lines(filepath: str, lines: list):
     """Атомарно сохраняет список строк в файл."""
@@ -94,15 +95,16 @@ def atomic_write_lines(filepath: str, lines: list):
     except Exception as e:
         logger.error(f"Ошибка при атомарном сохранении файла {filepath}: {e}")
         if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 def extract_user_id(val: str) -> str | None:
     """Извлекает ID пользователя FunPay из ввода: числовой ID, ссылка или алиас."""
     if not val:
         return None
     clean = val.strip()
-    if clean.lower() == "w1bbex":
-        return "14273448"
     if clean.isdigit():
         return clean
     m = re.search(r'users/(\d+)', clean)

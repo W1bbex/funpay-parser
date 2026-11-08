@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from funpay_analytics.storage.db import get_db
 
-def save_raw_snapshot(source_type, external_id=None, content_bytes=b"", extension="json"):
+def save_raw_snapshot(source_type, _external_id=None, content_bytes=b"", extension="json"):
     content_sha256 = hashlib.sha256(content_bytes).hexdigest()
     
     data_dir = os.environ.get("FUNPAY_DATA_DIR")
@@ -18,7 +18,7 @@ def save_raw_snapshot(source_type, external_id=None, content_bytes=b"", extensio
     
     file_name = f"{content_sha256}.{extension}.gz"
     file_path = os.path.join(raw_dir, file_name)
-    compressed_path_relative = f"data/raw/{source_type}/{file_name}"
+    compressed_path_relative = os.path.normpath(file_path).replace('\\', '/') if os.environ.get("FUNPAY_DATA_DIR") else f"data/raw/{source_type}/{file_name}"
     
     if not os.path.exists(file_path):
         temp_path = file_path + ".tmp"
@@ -33,6 +33,9 @@ def import_seller_json(file_path):
         file_bytes = f.read()
         
     data = json.loads(file_bytes.decode('utf-8'))
+    
+    if not isinstance(data, dict):
+        raise ValueError("Ожидается JSON объект продавца (dict)")
     
     # 1. Валидация в памяти
     if "schema_version" in data and data["schema_version"] != 2:

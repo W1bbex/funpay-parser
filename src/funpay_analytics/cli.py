@@ -1,5 +1,12 @@
 import argparse
 import sys
+from pathlib import Path
+
+# Ensure src/ is on sys.path for direct execution
+_src_dir = str(Path(__file__).resolve().parent.parent)
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
 from funpay_analytics.storage.db import init_db
 import funpay_analytics.normalize.extract_own_orders as extractor
 import funpay_analytics.harvest.json_importer as json_importer
