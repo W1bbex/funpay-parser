@@ -52,7 +52,9 @@ BANNER = f"""[bold {FP_BLUE}]╭────────────────
 ╰──────────────────────────────────────────────────────────────────╯[/bold {FP_BLUE}]"""
 
 def main():
-    seller_id = sys.argv[1] if len(sys.argv) > 1 else "14273448"
+    from utils import extract_user_id
+    raw_arg = sys.argv[1] if len(sys.argv) > 1 else "14273448"
+    seller_id = extract_user_id(raw_arg) or "14273448"
     report_file = BASE_DIR / "reports_v2" / f"seller_{seller_id}.json"
 
     console.print(BANNER)
@@ -123,10 +125,19 @@ def main():
 
     # Сортируем по сумме продаж для наглядности
     cat_items = []
+    def _parse_price(val):
+        if isinstance(val, (int, float)):
+            return float(val)
+        cleaned = re.sub(r"[^\d.]", "", str(val or 0.0))
+        try:
+            return float(cleaned) if cleaned else 0.0
+        except ValueError:
+            return 0.0
+
     for cat_name, cat_data in categories.items():
         revs = cat_data.get("reviews", [])
         lots = cat_data.get("candidate_lots", [])
-        total_sum = sum(float(r.get("price") or 0.0) for r in revs if isinstance(r, dict))
+        total_sum = sum(_parse_price(r.get("price")) for r in revs if isinstance(r, dict))
         cat_items.append((cat_name, len(revs), total_sum, len(lots)))
 
     cat_items.sort(key=lambda x: x[2], reverse=True)

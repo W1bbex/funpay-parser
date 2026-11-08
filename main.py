@@ -99,7 +99,7 @@ def show_banner():
         f"{indent}[bold {FP_BLUE}]{arr[9]}[/bold {FP_BLUE}]",
         f"{indent}[bold {FP_BLUE}]{arr[10]}[/bold {FP_BLUE}]",
         f"{indent}[bold {FP_BLUE}]{arr[11]}[/bold {FP_BLUE}]",
-        f"    [bold {FP_WHITE}]ANALYTICS & FULL MARKET SCRAPER PIPELINE[/bold {FP_WHITE}] [{FP_BLUE}](v1.0.0 by W1bbex)[/{FP_BLUE}]"
+        f"    [bold {FP_WHITE}]ANALYTICS & FULL MARKET SCRAPER PIPELINE[/bold {FP_WHITE}] [{FP_BLUE}](v1.0.0)[/{FP_BLUE}]"
     ])
     banner_text = "\n".join(lines)
     console.print(Panel(banner_text, border_style=FP_BLUE, expand=False))
@@ -123,15 +123,24 @@ def show_market_analytics():
         input("\nНажмите Enter...")
         return
         
-    total_sellers = len(data)
-    total_reviews = sum(x.get("total_reviews", 0) for x in data)
+    total_sellers = len(data) if isinstance(data, list) else 0
+    if not isinstance(data, list):
+        console.print(f"[bold {FP_WHITE}]❌ Некорректный формат отчета (ожидается список продавцов)[/bold {FP_WHITE}]")
+        input("\nНажмите Enter...")
+        return
+
+    total_reviews = sum(x.get("total_reviews", 0) for x in data if isinstance(x, dict))
     
     categories = {}
     total_earned = 0.0
     for s in data:
+        if not isinstance(s, dict):
+            continue
         s_earned = s.get("total_earned")
         calc_s_earned = 0.0
-        for cat, c_data in s.get("categories", {}).items():
+        for cat, c_data in (s.get("categories") or {}).items():
+            if not isinstance(c_data, dict):
+                continue
             if cat not in categories:
                 categories[cat] = {"count": 0, "earned": 0.0}
             
@@ -210,9 +219,11 @@ async def run_full_pipeline():
 
         console.print(f"\n[bold {FP_BLUE}]2. Запуск массового параллельного парсера FunPay...[/bold {FP_BLUE}]")
         from parser import main_async as run_mass_parser_async
-        await run_mass_parser_async()
-        
-        console.print(f"\n[bold {FP_BLUE}]✅ Массовый парсинг завершен! Отчет обновлен в market_report_v2.json[/bold {FP_BLUE}]")
+        success = await run_mass_parser_async()
+        if success is False:
+            console.print(f"\n[bold red][!] Внимание: Парсинг завершился с ошибками: не все задачи в очереди были обработаны![/bold red]")
+        else:
+            console.print(f"\n[bold {FP_BLUE}]✅ Массовый парсинг завершен! Отчет обновлен в market_report_v2.json[/bold {FP_BLUE}]")
         input("\nНажмите Enter для просмотра аналитики...")
         show_market_analytics()
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -253,7 +264,7 @@ async def run_single_seller_parse():
         start_time = time.time()
         for idx, proxy in enumerate(proxy_candidates):
             browser = get_browser_for_proxy(proxy) if proxy else "chrome120"
-            proxy_dict = {"all": proxy} if proxy else None
+            proxy_dict = {"http": proxy, "https": proxy} if proxy else None
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }

@@ -22,7 +22,7 @@ def save_raw_snapshot(source_type, content_bytes, extension="html"):
     
     file_name = f"{content_sha256}.{extension}.gz"
     file_path = os.path.join(raw_dir, file_name)
-    compressed_path_relative = f"data/raw/{source_type}/{file_name}"
+    compressed_path_relative = os.path.normpath(file_path).replace('\\', '/') if os.environ.get("FUNPAY_DATA_DIR") else f"data/raw/{source_type}/{file_name}"
     
     if not os.path.exists(file_path):
         temp_path = file_path + ".tmp"
@@ -45,7 +45,11 @@ def parse_mhtml(file_path):
         if part.get_content_type() == 'text/html':
             raw_bytes = part.get_payload(decode=True)
             if raw_bytes:
-                html_part = raw_bytes.decode('utf-8', errors='replace')
+                charset = part.get_content_charset() or 'utf-8'
+                try:
+                    html_part = raw_bytes.decode(charset)
+                except (LookupError, UnicodeDecodeError):
+                    html_part = raw_bytes.decode('utf-8', errors='replace')
                 break
             
     if not html_part:
@@ -112,9 +116,11 @@ def extract_orders(soup):
 def validate_orders(orders):
     errors = []
     valid = []
+    skipped_count = 0
     for idx, o in enumerate(orders):
         if not o.get('title_raw'):
-            continue # We silently skip orders without title as they might be system messages or something, wait, the instructions said: "сначала провалидировать все строки... невалидная цена превращается в NULL... при нарушении вернуть подробную ошибку". But earlier it said we only import orders with a title. I will enforce that if it has a title it MUST have order_id and seller_total_minor and category.
+            skipped_count += 1
+            continue
         
         missing = []
         if not o.get('order_id'): missing.append('order_id')
