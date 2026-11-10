@@ -3,12 +3,16 @@ import email.policy
 import json
 import os
 import tempfile
+from io import StringIO
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup
+from rich.console import Console
+
+import main
 
 from funpay_analytics.harvest.json_importer import import_seller_json
 from funpay_analytics.harvest.profile_harvester import parse_profile
@@ -23,9 +27,11 @@ import funpay_analytics.storage.db as db_mod
 from parser import FUNPAY_COOKIES, get_review_interval, parse_lot_price
 from utils import (
     atomic_write_json,
+    atomic_write_lines,
     extract_user_id,
     hide_proxy_credentials,
     load_proxies,
+    parse_price,
 )
 from fetch_ids import mark_proxy
 
@@ -135,16 +141,26 @@ def test_mark_proxy_hygiene(tmp_path):
     assert "1.1.1.1:8080" not in pool
 
 
-# 7. price: null sum safety
-def test_price_null_sum_safety():
+# Nullable prices must be handled by the actual analytics screen.
+def test_market_analytics_sums_nullable_review_prices(tmp_path, monkeypatch):
     revs = [
         {"price": 100.0},
         {"price": None},
         {"price": 50.0},
         {"other": 10.0},
     ]
-    ernd = sum(float(r.get("price") or 0.0) for r in revs if isinstance(r, dict))
-    assert ernd == 150.0
+    report = [{"total_reviews": 4, "categories": {"Keys": {"reviews": revs}}}]
+    (tmp_path / "market_report_v2.json").write_text(json.dumps(report), encoding="utf-8")
+    output = StringIO()
+    monkeypatch.setattr(main, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(main, "console", Console(file=output, width=120, color_system=None))
+    monkeypatch.setattr("builtins.input", lambda *_: "")
+
+    main.show_market_analytics()
+
+    rendered = output.getvalue()
+    assert "Keys" in rendered
+    assert rendered.count("150.00 RUB") == 2
 
 
 # 8. db get_connection when DB_PATH has no directory component
@@ -269,16 +285,44 @@ Content-Transfer-Encoding: 8bit
     assert "TEST1234" in str(soup)
 
 
-# 17. Atomic write JSON cleans up temporary files
-def test_atomic_write_json_unique_tmp():
-    with tempfile.TemporaryDirectory(prefix="funpay-atomic-") as td:
-        target_file = Path(td) / "data.json"
-        sample = {"users": [1, 2, 3], "status": "ok"}
-        atomic_write_json(str(target_file), sample)
+def test_atomic_write_json_replaces_from_distinct_temporary_files(tmp_path, monkeypatch):
+    """The previous JSON remains readable until each complete replacement is ready."""
+    target = tmp_path / "data.json"
+    target.write_text('{"version": 0}', encoding="utf-8")
+    replace = os.replace
+    temporary_paths = []
 
-        assert target_file.exists()
-        loaded = json.loads(target_file.read_text(encoding="utf-8"))
-        assert loaded == sample
+    def observe_replace(source, destination):
+        source = Path(source)
+        assert Path(destination) == target
+        assert source != target
+        assert source.parent == target.parent
+        assert json.loads(target.read_text(encoding="utf-8")) == {"version": len(temporary_paths)}
+        assert json.loads(source.read_text(encoding="utf-8")) == {"version": len(temporary_paths) + 1}
+        temporary_paths.append(source)
+        replace(source, destination)
+
+    monkeypatch.setattr("utils.os.replace", observe_replace)
+    atomic_write_json(str(target), {"version": 1})
+    atomic_write_json(str(target), {"version": 2})
+
+    assert len(temporary_paths) == len(set(temporary_paths)) == 2
+    assert json.loads(target.read_text(encoding="utf-8")) == {"version": 2}
+    assert set(tmp_path.iterdir()) == {target}
+
+
+def test_atomic_write_json_preserves_old_file_and_cleans_temp_on_replace_error(tmp_path, monkeypatch):
+    target = tmp_path / "data.json"
+    original = '{"version": 0}\n'
+    target.write_text(original, encoding="utf-8")
+    replace = MagicMock(side_effect=OSError("replacement denied"))
+    monkeypatch.setattr("utils.os.replace", replace)
+
+    atomic_write_json(str(target), {"version": 1})
+
+    replace.assert_called_once()
+    assert target.read_text(encoding="utf-8") == original
+    assert set(tmp_path.iterdir()) == {target}
 
 
 # 18. FUNPAY_DATA_DIR physical path synchronization
@@ -293,36 +337,6 @@ def test_funpay_data_dir_sync(tmp_path, monkeypatch):
     assert os.path.normpath(path_rel) == os.path.normpath(str(expected_file))
 
 
-# 19. Max reviews batch limit
-def test_max_reviews_batch_first_page_limit():
-    batch_reviews = [
-        MagicMock(date_text="2026-01-01", category_str="Keys", order_total=MagicMock(value="10.0"), rating=5, text="ok", reply=None)
-        for _ in range(25)
-    ]
-
-    total_reviews = 0
-    categories_reviews = {}
-    max_reviews = 10
-
-    def process_batch(reviews):
-        nonlocal total_reviews
-        count = 0
-        for review in reviews:
-            if max_reviews and total_reviews >= max_reviews:
-                break
-            category = review.category_str or "\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u043e"
-            if category not in categories_reviews:
-                categories_reviews[category] = []
-            categories_reviews[category].append(review)
-            total_reviews += 1
-            count += 1
-        return count
-
-    added = process_batch(batch_reviews)
-    assert added == 10
-    assert total_reviews == 10
-
-
 # 20. Orders validation skips missing title safely
 def test_orders_validation_skips_without_title():
     sample_orders = [
@@ -335,3 +349,77 @@ def test_orders_validation_skips_without_title():
     assert len(valid) == 2
     assert len(errors) == 0
     assert [o["order_id"] for o in valid] == ["1", "3"]
+
+
+def test_parse_price_formats():
+    assert parse_price(150) == 150.0
+    assert parse_price(150.75) == 150.75
+    assert parse_price(None) == 0.0
+    assert parse_price("") == 0.0
+    assert parse_price("1 250,50 RUB") == 1250.50
+    assert parse_price("99.99 ₽") == 99.99
+    assert parse_price("abc") == 0.0
+
+
+def test_atomic_write_lines_unique_tmp(tmp_path, monkeypatch):
+    target = tmp_path / "test.txt"
+    lines = ["line1", "line2"]
+    created_tmps = []
+    real_replace = os.replace
+
+    def tracked_replace(src, dst):
+        created_tmps.append(str(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", tracked_replace)
+    atomic_write_lines(str(target), lines)
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8").splitlines() == lines
+    assert len(created_tmps) == 1
+    assert created_tmps[0].startswith(str(target) + ".tmp.")
+    assert not os.path.exists(created_tmps[0])
+
+
+def test_load_proxies_merges_good_and_regular_proxies(tmp_path):
+    (tmp_path / "good_proxies.txt").write_text("1.1.1.1:8080\n", encoding="utf-8")
+    (tmp_path / "proxies.txt").write_text("1.1.1.1:8080\n2.2.2.2:8080\n", encoding="utf-8")
+    loaded = load_proxies(base_dir=str(tmp_path))
+    assert loaded == ["http://1.1.1.1:8080", "http://2.2.2.2:8080"]
+
+
+def test_show_seller_module_syntax():
+    import show_seller
+    assert hasattr(show_seller, "main")
+
+
+def test_init_db_transactional_migration_and_duplicate_column_idempotency(tmp_path, monkeypatch):
+    db_file = tmp_path / "test_migrations.sqlite3"
+    mig_dir = tmp_path / "migrations"
+    mig_dir.mkdir()
+    (mig_dir / "001_init.sql").write_text(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);\n"
+        "ALTER TABLE items ADD COLUMN extra TEXT;\n"
+        "ALTER TABLE items ADD COLUMN extra TEXT;\n",
+        encoding="utf-8",
+    )
+    (mig_dir / "002_broken.sql").write_text(
+        "ALTER TABLE items ADD COLUMN temp_col TEXT;\n"
+        "INSERT INTO non_existent_table VALUES (1);\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("FUNPAY_DB_PATH", str(db_file))
+    monkeypatch.setattr(db_mod, "MIGRATIONS_DIR", str(mig_dir))
+
+    with pytest.raises(Exception, match="Migration failed 002_broken.sql"):
+        db_mod.init_db()
+
+    with db_mod.get_db() as conn:
+        versions = [r[0] for r in conn.execute("SELECT version FROM schema_migrations").fetchall()]
+        assert versions == [1]
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(items)").fetchall()]
+        assert "extra" in cols
+        assert "temp_col" not in cols
+
+

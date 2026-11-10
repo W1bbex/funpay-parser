@@ -33,8 +33,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.theme import Theme
 
 from curl_cffi import requests
-from utils import atomic_write_json, get_browser_for_proxy, extract_user_id
-from parser import parse_profile, ping_and_rank, load_proxies, FUNPAY_COOKIES
+from utils import atomic_write_json, get_browser_for_proxy, extract_user_id, parse_price, load_proxies
+from parser import parse_profile, ping_and_rank, FUNPAY_COOKIES
 import fetch_ids
 
 FP_BLUE = "#2375B7"
@@ -147,12 +147,12 @@ def show_market_analytics():
             # v1 schema: {"count": ..., "earned": ...}
             if "count" in c_data or "earned" in c_data:
                 cnt = c_data.get("count", 0)
-                ernd = c_data.get("earned", 0.0)
+                ernd = parse_price(c_data.get("earned", 0.0))
             # v2 schema: {"reviews": [...], "candidate_lots": [...]}
             elif "reviews" in c_data:
                 revs = c_data.get("reviews", [])
                 cnt = len(revs)
-                ernd = sum(float(r.get("price") or 0.0) for r in revs if isinstance(r, dict))
+                ernd = sum(parse_price(r.get("price")) for r in revs if isinstance(r, dict))
             else:
                 cnt = 0
                 ernd = 0.0
@@ -162,7 +162,7 @@ def show_market_analytics():
             calc_s_earned += ernd
 
         if s_earned is not None:
-            total_earned += s_earned
+            total_earned += parse_price(s_earned)
         else:
             total_earned += calc_s_earned
 
@@ -316,7 +316,7 @@ async def run_single_seller_parse():
         for cat_name, cat_data in categories.items():
             revs = cat_data.get("reviews", [])
             lots = cat_data.get("candidate_lots", [])
-            total_sum = sum(float(r.get("price") or 0.0) for r in revs if isinstance(r, dict))
+            total_sum = sum(parse_price(r.get("price")) for r in revs if isinstance(r, dict))
             table.add_row(cat_name, str(len(revs)), f"{total_sum:,.2f} RUB", str(len(lots)))
 
         console.print(table)

@@ -26,6 +26,24 @@ def get_db():
     finally:
         conn.close()
 
+def _split_sql_statements(sql_script: str) -> list[str]:
+    statements: list[str] = []
+    buffer: list[str] = []
+    for line in sql_script.splitlines(keepends=True):
+        stripped = line.strip()
+        if not buffer and (not stripped or stripped.startswith("--")):
+            continue
+        buffer.append(line)
+        candidate = "".join(buffer).strip()
+        if candidate and sqlite3.complete_statement(candidate):
+            statements.append(candidate)
+            buffer.clear()
+    remainder = "".join(buffer).strip()
+    if remainder:
+        statements.append(remainder)
+    return statements
+
+
 def init_db():
     with get_db() as conn:
         conn.execute("PRAGMA journal_mode = WAL;")
@@ -52,11 +70,20 @@ def init_db():
                 with open(file_path, 'r', encoding='utf-8') as f:
                     sql_script = f.read()
                 try:
-                    cursor.executescript(sql_script)
+                    if not conn.in_transaction:
+                        cursor.execute("BEGIN")
+                    for stmt in _split_sql_statements(sql_script):
+                        try:
+                            cursor.execute(stmt)
+                        except sqlite3.OperationalError as exc:
+                            if "duplicate column name" in str(exc).lower() and "alter table" in stmt.lower():
+                                continue
+                            raise
                     cursor.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                     conn.commit()
                 except Exception as e:
-                    conn.rollback()
+                    if conn.in_transaction:
+                        conn.rollback()
                     raise Exception(f"Migration failed {filename}: {e}")
 
 if __name__ == '__main__':

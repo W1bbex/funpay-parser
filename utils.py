@@ -13,19 +13,35 @@ logger.add(
 os.makedirs("logs", exist_ok=True)
 logger.add("logs/parser.log", rotation="10 MB", retention="7 days", compression="zip")
 
+def parse_price(val) -> float:
+    """Безопасно извлекает числовую цену из float, int или строки с валютой/разделителями."""
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    cleaned = re.sub(r"[^\d.,]", "", str(val)).replace(",", ".")
+    try:
+        return float(cleaned) if cleaned else 0.0
+    except ValueError:
+        return 0.0
+
 def load_proxies(base_dir=None):
-    """Загружает и форматирует прокси из файлов proxies.txt и good_proxies.txt с сохранением порядка."""
+    """Загружает и форматирует прокси из файлов good_proxies.txt и proxies.txt с сохранением порядка."""
     if not base_dir:
         base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    candidate_files = []
     good_path = os.path.join(base_dir, "good_proxies.txt")
     if os.path.exists(good_path) and os.path.getsize(good_path) > 0:
-        target_file = good_path
-    else:
-        target_file = os.path.join(base_dir, "proxies.txt")
+        candidate_files.append(good_path)
+    
+    proxy_path = os.path.join(base_dir, "proxies.txt")
+    if os.path.exists(proxy_path) and os.path.getsize(proxy_path) > 0:
+        candidate_files.append(proxy_path)
         
     seen = set()
     raw_proxies = []
-    if os.path.exists(target_file):
+    for target_file in candidate_files:
         with open(target_file, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
@@ -85,8 +101,9 @@ def atomic_write_json(filepath: str, data: dict):
                 pass
 
 def atomic_write_lines(filepath: str, lines: list):
-    """Атомарно сохраняет список строк в файл."""
-    tmp_path = filepath + ".tmp"
+    """Атомарно сохраняет список строк в файл с уникальным временным файлом."""
+    import secrets
+    tmp_path = f"{filepath}.tmp.{secrets.token_hex(4)}"
     try:
         with open(tmp_path, 'w', encoding='utf-8') as f:
             for line in lines:
