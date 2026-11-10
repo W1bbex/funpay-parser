@@ -252,7 +252,8 @@ async def run_test_pagination(mock_reviews_parser_class, mock_sleep):
     assert session.post_call_count == 1
 
 @patch("parser.ReviewsParser")
-def test_parser_max_reviews_limit(mock_reviews_parser_class):
+@pytest.mark.parametrize("max_reviews, first_page_size", [(1, 1), (10, 25)])
+def test_parser_limits_first_page_and_skips_pagination(mock_reviews_parser_class, max_reviews, first_page_size):
     async def run():
         html_profile = """
         <html><body>
@@ -268,7 +269,7 @@ def test_parser_max_reviews_limit(mock_reviews_parser_class):
         mock_batch1.next_review_id = "111"
         r1 = MagicMock(); r1.category_str = "Steam"; r1.order_total.value = 100.0
         r1.date_text = "Сегодня"; r1.rating = 5; r1.text = "1"; r1.reply = None
-        mock_batch1.reviews = [r1]
+        mock_batch1.reviews = [r1] * first_page_size
 
         mock_batch2 = MagicMock()
         mock_batch2.user_id = "999"
@@ -289,9 +290,10 @@ def test_parser_max_reviews_limit(mock_reviews_parser_class):
         m3 = MagicMock(); m3.parse.return_value = mock_batch3
         mock_reviews_parser_class.side_effect = [m1, m2, m3]
 
-        # Requesting max_reviews=1 should stop after first batch
-        res = await parse_profile(session, "999", max_reviews=1)
-        assert res["total_reviews"] == 1
+        res = await parse_profile(session, "999", max_reviews=max_reviews)
+        assert res["total_reviews"] == max_reviews
+        assert len(res["categories"]["Steam"]["reviews"]) == max_reviews
         assert session.post_call_count == 0
+        mock_reviews_parser_class.assert_called_once()
 
     asyncio.run(run())

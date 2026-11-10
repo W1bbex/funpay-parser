@@ -17,11 +17,13 @@ def test_cli_funpay_db_path_env(tmp_path):
     env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{env.get('PYTHONPATH', '')}"
     
     result = subprocess.run(
-        [sys.executable, "-m", "funpay_analytics.cli", "init-db"],
+        [sys.executable, "-X", "utf8", "-u", "-m", "funpay_analytics.cli", "init-db"],
         env=env,
         cwd=base_dir,
         capture_output=True,
-        text=True
+        text=True,
+        encoding="utf-8",
+        timeout=15,
     )
     
     assert result.returncode == 0

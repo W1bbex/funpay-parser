@@ -111,7 +111,12 @@ def import_profile_from_file(file_path):
                     native_section_name = category_names.get(cat_id, "Unknown")
                     
                     for offer in offers_list:
-                        lot_id = offer.id
+                        if offer.id is None:
+                            continue
+                        try:
+                            lot_id = int(offer.id)
+                        except (ValueError, TypeError):
+                            continue
                         title_raw = offer.title
                         
                         visible_price_minor = None

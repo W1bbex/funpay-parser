@@ -16,7 +16,7 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     # init-db
-    init_parser = subparsers.add_parser("init-db", help="Инициализировать базу данных")
+    subparsers.add_parser("init-db", help="Инициализировать базу данных")
 
     # import-own-orders
     import_parser = subparsers.add_parser("import-own-orders", help="Импортировать собственные заказы из сохраненного HTML/MHTML")
