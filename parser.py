@@ -418,6 +418,7 @@ async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyn
                 else:
                     logger.error(f"[Воркер {worker_id} | IP: {ip_name}] Продавец {user_id} превысил лимит попыток ({retries}). Пропускаем.")
                     library[user_id] = {'status': 'failed', 'error': 'max_retries_exceeded'}
+                    stats['failed_count'] = stats.get('failed_count', 0) + 1
                 consecutive_errors += 1
                 stats['errors'] += 1
                 
@@ -537,7 +538,7 @@ async def main_async():
         except Exception as e:
             logger.error(f"Неизвестная ошибка: {e}")
                 
-    stats = {'parsed_count': 0, 'total_reviews': 0, 'errors': 0, 'proxy_success': {}}
+    stats = {'parsed_count': 0, 'total_reviews': 0, 'errors': 0, 'failed_count': 0, 'proxy_success': {}}
     global_start = time.time()
     
     try:
@@ -593,7 +594,11 @@ async def main_async():
         if stats.get('unprocessed_count', 0) > 0:
             logger.error(f"Необработанных продавцов (сбой воркеров): {stats['unprocessed_count']}")
         logger.info("========================================")
-    return stats.get('unprocessed_count', 0) == 0
+    if stats.get('unprocessed_count', 0) > 0:
+        return False
+    if stats.get('failed_count', 0) > 0 and stats.get('parsed_count', 0) == 0:
+        return False
+    return True
 
 def main():
     success = asyncio.run(main_async())

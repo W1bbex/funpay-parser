@@ -89,3 +89,23 @@ def test_parse_worker_does_not_mark_completed_when_atomic_write_fails():
         assert stats["errors"] >= 1
 
     asyncio.run(_run())
+
+
+def test_batch_with_every_seller_failed_is_not_success(tmp_path, monkeypatch):
+    import json
+    import parser as fp_parser
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "queue.txt").write_text("12345:1\n", encoding="utf-8")
+    monkeypatch.setattr(fp_parser, "parse_profile", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        fp_parser,
+        "ping_and_rank",
+        AsyncMock(return_value=[{"name": "offline", "url": None}]),
+    )
+    monkeypatch.setattr(fp_parser.random, "uniform", lambda *_: 0)
+    success = asyncio.run(fp_parser.main_async())
+    library = json.loads((tmp_path / "library_v2.json").read_text(encoding="utf-8"))
+    assert library["12345"]["status"] == "failed"
+    assert success is False
+
