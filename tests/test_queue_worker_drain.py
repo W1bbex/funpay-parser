@@ -53,3 +53,39 @@ def test_mass_parse_detects_undrained_queue(tmp_path, monkeypatch):
 
     asyncio.run(_run())
     assert stats.get("unprocessed_count", 0) == 3
+
+
+def test_atomic_write_json_returns_boolean_status(tmp_path, monkeypatch):
+    from utils import atomic_write_json
+    target = tmp_path / "valid.json"
+    assert atomic_write_json(str(target), {"key": "val"}) is True
+    assert target.exists()
+
+    # When replacement fails, it must return False honestly
+    monkeypatch.setattr("utils.os.replace", lambda s, d: (_ for _ in ()).throw(OSError("disk error")))
+    assert atomic_write_json(str(target), {"key": "new_val"}) is False
+
+
+def test_parse_worker_does_not_mark_completed_when_atomic_write_fails():
+    async def _run():
+        queue = asyncio.Queue()
+        queue.put_nowait("5555")
+
+        results = []
+        library = {}
+        stats = {"parsed_count": 0, "total_reviews": 0, "errors": 0, "proxy_success": {}}
+        retry_map = {}
+
+        with patch("parser.parse_profile", new=AsyncMock(return_value={"total_reviews": 10})):
+            with patch("parser.requests.AsyncSession") as mock_session_cls:
+                mock_session = AsyncMock()
+                mock_session.__aenter__.return_value = mock_session
+                mock_session_cls.return_value = mock_session
+                with patch("parser.atomic_write_json", return_value=False):
+                    await parse_worker(1, "test-ip", None, queue, results, library, stats, retry_map)
+
+        assert library.get("5555", {}).get("status") != "completed"
+        assert stats["parsed_count"] == 0
+        assert stats["errors"] >= 1
+
+    asyncio.run(_run())
