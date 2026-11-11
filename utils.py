@@ -84,7 +84,7 @@ def hide_proxy_credentials(url: str) -> str:
         return url.split('://')[-1]
     return url
 
-def atomic_write_json(filepath: str, data: dict):
+def atomic_write_json(filepath: str, data: dict) -> bool:
     """Атомарно сохраняет JSON в файл с уникальным временным файлом, предотвращая гонки на Windows."""
     import secrets
     tmp_path = f"{filepath}.tmp.{secrets.token_hex(4)}"
@@ -92,6 +92,7 @@ def atomic_write_json(filepath: str, data: dict):
         with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
         os.replace(tmp_path, filepath)
+        return True
     except Exception as e:
         logger.error(f"Ошибка при атомарном сохранении файла {filepath}: {e}")
         if os.path.exists(tmp_path):
@@ -99,6 +100,7 @@ def atomic_write_json(filepath: str, data: dict):
                 os.remove(tmp_path)
             except OSError:
                 pass
+        return False
 
 def atomic_write_lines(filepath: str, lines: list):
     """Атомарно сохраняет список строк в файл с уникальным временным файлом."""

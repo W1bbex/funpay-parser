@@ -388,24 +388,28 @@ async def parse_worker(worker_id: int, ip_name: str, proxy_url: str, queue: asyn
                 res = None
             elapsed = time.time() - start_time
             
+            written = False
             if res:
                 reviews = res.get('total_reviews', 0)
                 rps = reviews / elapsed if elapsed > 0 else 0
                 logger.info(f"[ID {user_id}] ⚡ Скорость: {rps:.1f} о/с (Всего: {elapsed:.1f} с)")
                 
                 os.makedirs('reports_v2', exist_ok=True)
-                atomic_write_json(f'reports_v2/seller_{user_id}.json', res)
-                
-                library[user_id] = {
-                    'status': 'completed',
-                    'reviews': reviews
-                }
-                consecutive_errors = 0
-                stats['parsed_count'] += 1
-                stats['total_reviews'] += reviews
-                p_url = proxy_url if proxy_url else 'Локальный IP'
-                stats['proxy_success'][p_url] = stats['proxy_success'].get(p_url, 0) + 1
-            else:
+                written = bool(atomic_write_json(f'reports_v2/seller_{user_id}.json', res))
+                if written:
+                    library[user_id] = {
+                        'status': 'completed',
+                        'reviews': reviews
+                    }
+                    consecutive_errors = 0
+                    stats['parsed_count'] += 1
+                    stats['total_reviews'] += reviews
+                    p_url = proxy_url if proxy_url else 'Локальный IP'
+                    stats['proxy_success'][p_url] = stats['proxy_success'].get(p_url, 0) + 1
+                else:
+                    logger.error(f"[Воркер {worker_id} | IP: {ip_name}] Ошибка записи файла отчета reports_v2/seller_{user_id}.json")
+            
+            if not res or not written:
                 retries = retry_map.get(user_id, 0) + 1
                 retry_map[user_id] = retries
                 if retries < 3:
