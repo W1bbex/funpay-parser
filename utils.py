@@ -2,6 +2,7 @@ import os
 import json
 import sys
 import re
+from typing import Any
 from loguru import logger
 
 # Настройка единого логгера для всех скриптов
@@ -150,7 +151,7 @@ def hide_proxy_credentials(url: str) -> str:
             return f"{parts[2]}:{parts[3]}"
     return clean
 
-def atomic_write_json(filepath: str, data: dict) -> bool:
+def atomic_write_json(filepath: str, data: Any) -> bool:
     """Атомарно сохраняет JSON в файл с уникальным временным файлом, предотвращая гонки на Windows."""
     import secrets
     tmp_path = f"{filepath}.tmp.{secrets.token_hex(4)}"

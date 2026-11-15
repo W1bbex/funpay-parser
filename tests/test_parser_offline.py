@@ -294,3 +294,22 @@ def test_parser_limits_first_page_and_skips_pagination(mock_reviews_parser_class
         mock_reviews_parser_class.assert_called_once()
 
     asyncio.run(run())
+
+
+def test_direct_package_imports_and_domain_functions():
+    from funpay_analytics.parser.lot_filter import (
+        get_review_interval,
+        is_candidate,
+        parse_lot_price,
+    )
+    from funpay_analytics.scraper.client import FUNPAY_COOKIES, get_smart_delay
+
+    assert FUNPAY_COOKIES["cy"] == "rub"
+    assert get_review_interval(100.0) == (Decimal("95"), Decimal("150"))
+    assert is_candidate(50.0, Decimal("95"), Decimal("150")) is True
+    assert is_candidate(200.0, Decimal("95"), Decimal("150")) is False
+    assert parse_lot_price(None) == 0.0
+
+    delay = get_smart_delay(is_proxy=True)
+    assert 0.5 <= delay <= 2.5
+
