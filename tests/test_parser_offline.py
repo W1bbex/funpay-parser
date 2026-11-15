@@ -1,8 +1,5 @@
 import pytest
 import asyncio
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from parser import parse_profile, get_review_interval, is_candidate
 from unittest.mock import patch, MagicMock
 from decimal import Decimal
@@ -11,7 +8,7 @@ class MockResponse:
     def __init__(self, text, status_code=200):
         self.text = text
         self.status_code = status_code
-        
+
     def raise_for_status(self):
         pass
 
@@ -101,37 +98,37 @@ async def run_test_normal_filter(mock_reviews_parser_class):
         get_responses={"https://funpay.com/users/999/": MockResponse(html_profile)},
         post_responses=[]
     )
-    
+
     mock_batch = MagicMock()
     mock_batch.user_id = "999"
     mock_batch.next_review_id = None
-    
+
     # Отзывы 20, 200, 300
     r1 = MagicMock(); r1.category_str = "Telegram"; r1.order_total.value = 20.0
     r1.date_text = "Месяц назад"; r1.rating = 5; r1.text = "1"; r1.reply = None
-    
+
     r2 = MagicMock(); r2.category_str = "Telegram"; r2.order_total.value = 200.0
     r2.date_text = "Месяц назад"; r2.rating = 5; r2.text = "2"; r2.reply = None
 
     r3 = MagicMock(); r3.category_str = "Telegram"; r3.order_total.value = 300.0
     r3.date_text = "Месяц назад"; r3.rating = 5; r3.text = "3"; r3.reply = None
-    
+
     mock_batch.reviews = [r1, r2, r3]
-    
+
     mock_instance = MagicMock()
     mock_instance.parse.return_value = mock_batch
     mock_reviews_parser_class.return_value = mock_instance
 
     res = await parse_profile(session, "999")
-    
+
     assert res['schema_version'] == 2
     cats = res['categories']
     assert "Telegram" in cats
     cat = cats["Telegram"]
-    
+
     lots = cat['candidate_lots']
     ids = [l['id'] for l in lots]
-    
+
     # 1, 10, 189.99 pass. 500, 1000 fail.
     # Bad ID "0" or "" or Bad price "0" shouldn't be here
     assert "111" in ids
@@ -139,7 +136,7 @@ async def run_test_normal_filter(mock_reviews_parser_class):
     assert "333" in ids
     assert "444" not in ids
     assert "555" not in ids
-    
+
     assert "BAD" not in ids
     assert "0" not in ids
     assert "" not in ids
@@ -173,30 +170,30 @@ async def run_test_disable_filter(mock_reviews_parser_class):
         get_responses={"https://funpay.com/users/999/": MockResponse(html_profile)},
         post_responses=[]
     )
-    
+
     mock_batch = MagicMock()
     mock_batch.user_id = "999"
     mock_batch.next_review_id = None
-    
+
     # Отзыв 15
     r1 = MagicMock(); r1.category_str = "Telegram"; r1.order_total.value = 15.0
     r1.date_text = "Месяц назад"; r1.rating = 5; r1.text = "1"; r1.reply = None
-    
+
     mock_batch.reviews = [r1]
-    
+
     mock_instance = MagicMock()
     mock_instance.parse.return_value = mock_batch
     mock_reviews_parser_class.return_value = mock_instance
 
     res = await parse_profile(session, "999")
-    
+
     cats = res['categories']
     assert "Telegram" in cats
     cat = cats["Telegram"]
-    
+
     lots = cat['candidate_lots']
     ids = [l['id'] for l in lots]
-    
+
     # Filter is disabled, so both 500 and 1000 should pass!
     assert "444" in ids
     assert "555" in ids
@@ -210,45 +207,45 @@ async def run_test_pagination(mock_reviews_parser_class, mock_sleep):
         get_responses={"https://funpay.com/users/999/": MockResponse(html_profile)},
         post_responses=[MockResponse("post1")]
     )
-    
+
     mock_batch1 = MagicMock()
     mock_batch1.user_id = "999"
     mock_batch1.next_review_id = "12345"
-    
+
     r1 = MagicMock(); r1.category_str = "Steam"; r1.order_total.value = 100.0
     r1.date_text = "Месяц назад"; r1.rating = 5; r1.text = "1"; r1.reply = "Ответ 1"
-    
+
     mock_batch1.reviews = [r1]
-    
+
     mock_batch2 = MagicMock()
     mock_batch2.user_id = "999"
     mock_batch2.next_review_id = None
-    
+
     r2 = MagicMock(); r2.category_str = "Steam"; r2.order_total.value = 200.0
     r2.date_text = "Год назад"; r2.rating = None; r2.text = "2"; r2.reply = None
-    
+
     mock_batch2.reviews = [r2]
-    
+
     mock_instance1 = MagicMock()
     mock_instance1.parse.return_value = mock_batch1
-    
+
     mock_instance2 = MagicMock()
     mock_instance2.parse.return_value = mock_batch2
-    
+
     mock_reviews_parser_class.side_effect = [mock_instance1, mock_instance2]
 
     res = await parse_profile(session, "999")
-    
+
     assert res['total_reviews'] == 2
     reviews = res['categories']["Steam"]["reviews"]
     assert len(reviews) == 2
     assert reviews[0]['reply'] == "Ответ 1"
-    
+
     # Rating null is preserved, not replaced by 5
     assert reviews[1]['rating'] is None
     # Date "Год назад" is saved
     assert reviews[1]['date'] == "Год назад"
-    
+
     assert session.post_call_count == 1
 
 @patch("parser.ReviewsParser")

@@ -1,10 +1,7 @@
-import email
-import email.policy
+import asyncio
 import json
 import os
-import tempfile
 from io import StringIO
-from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -56,7 +53,8 @@ def test_extract_own_orders_nbsp_price():
 
 
 # 2. Plain HTML file import in extract_own_orders
-def test_parse_plain_html(tmp_path):
+def test_parse_plain_html(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUNPAY_DATA_DIR", str(tmp_path))
     plain_html = b"""<!DOCTYPE html>
     <html><body>
     <a class="tc-item" href="https://funpay.com/orders/PLN1234/">
@@ -249,7 +247,8 @@ def test_db_get_connection_dynamic_env(tmp_path, monkeypatch):
 
 
 # 16. MHTML charset windows-1251 decoding
-def test_extract_own_orders_charset_windows_1251(tmp_path):
+def test_extract_own_orders_charset_windows_1251(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUNPAY_DATA_DIR", str(tmp_path))
     cyrillic_text = bytes.fromhex("d2e5f1f2eefbe9").decode("windows-1251")
     html_content = f"""
     <html><body>
@@ -388,9 +387,19 @@ def test_load_proxies_merges_good_and_regular_proxies(tmp_path):
     assert loaded == ["http://1.1.1.1:8080", "http://2.2.2.2:8080"]
 
 
-def test_show_seller_module_syntax():
+def test_show_seller_main_handles_missing_report(tmp_path, monkeypatch):
     import show_seller
-    assert hasattr(show_seller, "main")
+    from io import StringIO
+    from rich.console import Console
+
+    monkeypatch.setattr(show_seller, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(show_seller.time, "sleep", lambda *_: None)
+    output = StringIO()
+    monkeypatch.setattr(show_seller, "console", Console(file=output))
+    monkeypatch.setattr("sys.argv", ["show_seller.py", "9999999999"])
+    show_seller.main()
+    rendered = output.getvalue()
+    assert "не найден" in rendered or "Файл отчета" in rendered
 
 
 def test_init_db_transactional_migration_and_duplicate_column_idempotency(tmp_path, monkeypatch):
@@ -421,5 +430,595 @@ def test_init_db_transactional_migration_and_duplicate_column_idempotency(tmp_pa
         cols = [r[1] for r in conn.execute("PRAGMA table_info(items)").fetchall()]
         assert "extra" in cols
         assert "temp_col" not in cols
+
+
+def test_parse_price_handles_thousands_separators_and_currency_formats():
+    from utils import parse_price
+
+    assert parse_price("1,500.50 RUB") == 1500.50
+    assert parse_price("1.500,50 ₽") == 1500.50
+    assert parse_price("10,000") == 10000.0
+    assert parse_price("10,000 ₽") == 10000.0
+    assert parse_price("150,50 ₽") == 150.50
+    assert parse_price("150.50") == 150.50
+    assert parse_price("10 000 ₽") == 10000.0
+    assert parse_price("10\xa0000,50 ₽") == 10000.50
+    assert parse_price(1500) == 1500.0
+    assert parse_price(1500.75) == 1500.75
+    assert parse_price(None) == 0.0
+    assert parse_price("") == 0.0
+    assert parse_price("invalid") == 0.0
+
+
+def test_atomic_write_lines_boolean_contract(tmp_path, monkeypatch):
+    from utils import atomic_write_lines
+
+    target = tmp_path / "test_lines.txt"
+    assert atomic_write_lines(str(target), ["line1", "line2"]) is True
+    assert target.read_text(encoding="utf-8").splitlines() == ["line1", "line2"]
+
+    monkeypatch.setattr("utils.os.replace", lambda s, d: (_ for _ in ()).throw(OSError("disk full")))
+    assert atomic_write_lines(str(target), ["fail"]) is False
+
+
+def test_hide_proxy_credentials_variations():
+    from utils import hide_proxy_credentials
+
+    assert hide_proxy_credentials("socks5://user:pass@1.2.3.4:1080") == "1.2.3.4:1080"
+    assert hide_proxy_credentials("http://user:pass@1.2.3.4:8080") == "1.2.3.4:8080"
+    assert hide_proxy_credentials("1.2.3.4:8080:user:pass") == "1.2.3.4:8080"
+    assert hide_proxy_credentials("user:pass:1.2.3.4:8080") == "1.2.3.4:8080"
+    assert hide_proxy_credentials("http://1.2.3.4:8080") == "1.2.3.4:8080"
+    assert hide_proxy_credentials(None) == "None"
+
+
+def test_get_browser_for_proxy_impersonations():
+    from utils import get_browser_for_proxy
+
+    allowed = {"chrome110", "chrome116", "chrome120", "edge101", "chrome124"}
+    for p in ["http://p1:8080", "socks5://p2:1080", "http://p3:3128", None]:
+        browser = get_browser_for_proxy(p)
+        assert browser in allowed
+        assert "safari" not in browser
+
+
+def test_json_importer_handles_currency_strings_and_missing_reply(tmp_path, monkeypatch):
+    from funpay_analytics.harvest.json_importer import import_seller_json
+    from funpay_analytics.storage.db import init_db, get_db
+
+    db_path = str(tmp_path / "importer_test.sqlite3")
+    monkeypatch.setenv("FUNPAY_DB_PATH", db_path)
+    monkeypatch.setenv("FUNPAY_DATA_DIR", str(tmp_path / "data"))
+    init_db()
+
+    payload = {
+        "schema_version": 2,
+        "seller_id": "99901",
+        "username": "SuperSeller",
+        "currency": "RUB",
+        "categories": {
+            "Gems": {
+                "candidate_lots": [
+                    {"id": "111", "section": "Gems", "text": "100 Gems", "price": "150 ₽", "stock": 5}
+                ],
+                "reviews": [
+                    {"rating": 5, "price": "150,00 ₽", "text": "Great!", "date": "10 мая"}
+                ]
+            }
+        }
+    }
+    json_file = tmp_path / "seller.json"
+    json_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    import_seller_json(str(json_file))
+
+    with get_db() as conn:
+        lot = conn.execute("SELECT id, seller_id, is_active FROM lots WHERE id=111").fetchone()
+        assert lot[0] == 111
+        assert lot[1] == 99901
+        review = conn.execute("SELECT rating, price_minor, seller_reply FROM reviews WHERE seller_id=99901").fetchone()
+        assert review[0] == 5
+        assert review[1] == 15000
+        assert review[2] is None
+
+
+def test_json_importer_null_seller_id_conflict_avoidance(tmp_path, monkeypatch):
+    from funpay_analytics.harvest.json_importer import import_seller_json
+    from funpay_analytics.storage.db import init_db, get_db
+
+    db_path = str(tmp_path / "null_conflict.sqlite3")
+    monkeypatch.setenv("FUNPAY_DB_PATH", db_path)
+    monkeypatch.setenv("FUNPAY_DATA_DIR", str(tmp_path / "data"))
+    init_db()
+
+    with get_db() as conn:
+        conn.execute("INSERT INTO lots (id, seller_id, is_active) VALUES (222, NULL, 1)")
+        conn.commit()
+
+    payload = {
+        "schema_version": 2,
+        "seller_id": "88802",
+        "username": "OwnerSeller",
+        "currency": "RUB",
+        "categories": {
+            "Coins": {
+                "candidate_lots": [
+                    {"id": "222", "section": "Coins", "text": "Gold Coin", "price": 50.0}
+                ],
+                "reviews": []
+            }
+        }
+    }
+    json_file = tmp_path / "seller_claim.json"
+    json_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    import_seller_json(str(json_file))
+
+    with get_db() as conn:
+        lot = conn.execute("SELECT id, seller_id FROM lots WHERE id=222").fetchone()
+        assert lot[1] == 88802
+
+
+def test_extract_profile_lots_and_matching():
+    from parser import extract_profile_lots, match_and_filter_lots
+
+    html = """
+    <div class="mb20">
+        <div class="offer">
+            <div class="offer-list-title">Telegram Premium</div>
+            <a class="tc-item" href="https://funpay.com/lots/offer?id=777123">
+                <div class="tc-desc">Premium 1 Year</div>
+                <div class="tc-price">1 000 ₽</div>
+                <div class="tc-amount">10 шт.</div>
+            </a>
+        </div>
+    </div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    lots = extract_profile_lots(soup, "12345")
+    assert len(lots) == 1
+    assert lots[0]["id"] == "777123"
+    assert lots[0]["price"] == 1000.0
+    assert lots[0]["stock"] == 10
+
+    categories_reviews = {
+        "Telegram": [{"price": 1000.0, "rating": 5, "text": "ok", "reply": None, "date": "1 мая"}]
+    }
+    categories = match_and_filter_lots(lots, categories_reviews)
+    assert "Telegram" in categories
+    assert len(categories["Telegram"]["candidate_lots"]) >= 1
+
+
+def test_parse_worker_single_bad_seller_does_not_abort_subsequent_queue(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import parser as fp_parser
+    from parser import parse_worker
+
+    monkeypatch.setattr(fp_parser, "BASE_DIR", str(tmp_path))
+
+    async def _run():
+        queue = asyncio.Queue()
+        queue.put_nowait("bad_seller")
+        queue.put_nowait("good_seller")
+
+        library = {}
+        stats = {"parsed_count": 0, "total_reviews": 0, "errors": 0, "proxy_success": {}, "failed_count": 0}
+        retry_map = {}
+
+        async def fake_parse_profile(client, uid, *args, **kwargs):
+            if uid == "bad_seller":
+                return None
+            return {"total_reviews": 5, "categories": {}}
+
+        with patch("parser.parse_profile", side_effect=fake_parse_profile):
+            with patch("parser.requests.AsyncSession") as mock_session_cls:
+                mock_session = AsyncMock()
+                mock_session.__aenter__.return_value = mock_session
+                mock_session_cls.return_value = mock_session
+                with patch("parser.atomic_write_json", return_value=True):
+                    with patch("parser.asyncio.sleep", new=AsyncMock()):
+                        await parse_worker(1, "test-ip", "http://fake-proxy:8080", queue, [], library, stats, retry_map)
+
+        assert library["bad_seller"]["status"] == "failed"
+        assert library["good_seller"]["status"] == "completed"
+        assert stats["parsed_count"] == 1
+        assert queue.empty()
+
+    asyncio.run(_run())
+
+
+def test_fetch_ids_bad_rmthub_file_cleansed_on_recovery(tmp_path):
+    from fetch_ids import mark_proxy
+
+    base_dir = str(tmp_path)
+    good_proxies = set()
+    bad_proxies = {"http://recovered-proxy:8080", "http://still-bad:8080"}
+    pool = ["http://recovered-proxy:8080"]
+
+    (tmp_path / "bad_rmthub.txt").write_text("http://recovered-proxy:8080\nhttp://still-bad:8080\n", encoding="utf-8")
+
+    mark_proxy("http://recovered-proxy:8080", "good", base_dir, good_proxies, bad_proxies, pool)
+
+    assert "http://recovered-proxy:8080" in good_proxies
+    assert "http://recovered-proxy:8080" not in bad_proxies
+    bad_lines = (tmp_path / "bad_rmthub.txt").read_text(encoding="utf-8").splitlines()
+    assert "http://recovered-proxy:8080" not in bad_lines
+    assert "http://still-bad:8080" in bad_lines
+
+
+def test_price_minor_currency_abbreviation_with_dot():
+    from funpay_analytics.harvest.json_importer import _to_price_minor
+    from utils import parse_price
+
+    assert _to_price_minor("50,25 руб.") == 5025
+    assert _to_price_minor("50.25 руб.") == 5025
+    assert _to_price_minor("1,500.50 руб.") == 150050
+    assert _to_price_minor("10,000 руб.") == 1000000
+    assert _to_price_minor("50,25 р.") == 5025
+    assert _to_price_minor("10.50 руб.") == 1050
+
+    assert parse_price("50,25 руб.") == 50.25
+    assert parse_price("50.25 руб.") == 50.25
+    assert parse_price("1,500.50 руб.") == 1500.50
+    assert parse_price("10,000 руб.") == 10000.0
+
+
+def test_profile_harvester_data_s_prefers_tc_price_over_tc_amount(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock, patch
+    import funpay_analytics.storage.db as db_module
+    from funpay_analytics.harvest.profile_harvester import import_profile_from_file
+
+    test_db = str(tmp_path / "test_data_s.sqlite3")
+    test_data = str(tmp_path / "test_data_s_dir")
+    monkeypatch.setenv("FUNPAY_DB_PATH", test_db)
+    monkeypatch.setenv("FUNPAY_DATA_DIR", test_data)
+    monkeypatch.setattr(db_module, "DB_PATH", test_db)
+    db_module.init_db()
+
+    mock_profile = MagicMock()
+    mock_profile.user_id = 771122
+    mock_profile.username = "TestSeller"
+    mock_profile.status_text = "Online"
+    mock_profile.registration_date_text = "1 января 2024"
+    mock_profile.rating = None
+
+    mock_offer = MagicMock()
+    mock_offer.id = "8888"
+    mock_offer.title = "1000 Gold"
+    mock_offer.price = MagicMock(value=0.5)
+    mock_offer.raw_source = '<a class="tc-item"><div class="tc-amount" data-s="50000">50,000 шт.</div><div class="tc-price" data-s="0.5">0.50 ₽</div></a>'
+    mock_offer.auto_delivery = False
+
+    mock_profile.offers = {"chips": {777: [mock_offer]}}
+
+    html_file = tmp_path / "profile_chips.html"
+    html_file.write_text("<html><body></body></html>", encoding="utf-8")
+
+    with patch("funpay_analytics.harvest.profile_harvester.ProfilePageParser") as mock_parser_cls:
+        mock_parser = MagicMock()
+        mock_parser.parse.return_value = mock_profile
+        mock_parser_cls.return_value = mock_parser
+
+        seller_id, count = import_profile_from_file(str(html_file))
+        assert seller_id == 771122
+        assert count == 1
+
+    with db_module.get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT data_s_decimal FROM lot_snapshots WHERE lot_id=8888")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "0.5"
+
+
+def test_markup_escape_prevents_rich_errors():
+    from rich.markup import escape
+    from rich.console import Console
+    from io import StringIO
+
+    test_console = Console(file=StringIO(), force_terminal=False)
+    untrusted_strings = [
+        "[/bold]",
+        "[bold red]error[/bold red]",
+        "User[123]",
+        "[/a][/b]",
+        "{'key': [1, 2, 3]}",
+    ]
+
+    for s in untrusted_strings:
+        escaped = escape(s)
+        # Must not raise MarkupError
+        test_console.print(f"[bold #FFFFFF]{escaped}[/bold #FFFFFF]")
+
+
+def test_mark_proxy_atomic_write_failure_preserves_state(tmp_path, monkeypatch):
+    import fetch_ids
+
+    monkeypatch.setattr(fetch_ids, "atomic_write_lines", lambda *args, **kwargs: False)
+    good_proxies = {"http://p1:8080"}
+    bad_proxies = {"http://p2:8080"}
+    pool = ["http://p1:8080"]
+
+    # Trying to mark p2 as good when disk write fails must not discard it from memory
+    fetch_ids.mark_proxy("http://p2:8080", "good", str(tmp_path), good_proxies, bad_proxies, pool)
+    assert "http://p2:8080" in bad_proxies
+    assert "http://p2:8080" not in good_proxies
+
+
+def test_library_read_error_aborts_without_overwriting(tmp_path, monkeypatch):
+    import parser as fp_parser
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fp_parser, "BASE_DIR", str(tmp_path))
+    lib_file = tmp_path / "library_v2.json"
+    original_content = '["not", "a", "dict"]'
+    lib_file.write_text(original_content, encoding="utf-8")
+
+    success = asyncio.run(fp_parser.main_async())
+    assert success is False
+    assert lib_file.read_text(encoding="utf-8") == original_content
+
+
+def test_main_async_returns_false_on_interruption(tmp_path, monkeypatch):
+    import parser as fp_parser
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fp_parser, "BASE_DIR", str(tmp_path))
+
+    async def raise_interrupt(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(fp_parser, "mass_parse", raise_interrupt)
+    success = asyncio.run(fp_parser.main_async())
+    assert success is False
+
+
+def test_parse_worker_waits_for_peer_reenqueued_tasks(tmp_path, monkeypatch):
+    import parser as fp_parser
+    from unittest.mock import AsyncMock, patch
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fp_parser, "BASE_DIR", str(tmp_path))
+
+    async def _run():
+        queue = asyncio.Queue()
+        library = {}
+        stats = {"parsed_count": 0, "total_reviews": 0, "errors": 0, "proxy_success": {}, "failed_count": 0}
+        retry_map = {}
+        active_workers = [1]  # Simulate peer worker currently in-flight
+
+        async def fake_parse_profile(client, uid, *args, **kwargs):
+            return {"total_reviews": 10, "categories": {}}
+
+        async def peer_simulator():
+            await asyncio.sleep(0.05)
+            queue.put_nowait("seller_delayed")
+            active_workers[0] = 0
+
+        with patch("parser.parse_profile", side_effect=fake_parse_profile):
+            with patch("parser.requests.AsyncSession") as mock_session_cls:
+                mock_session = AsyncMock()
+                mock_session.__aenter__.return_value = mock_session
+                mock_session_cls.return_value = mock_session
+                with patch("parser.atomic_write_json", return_value=True):
+                    with patch("parser.asyncio.sleep", new=AsyncMock()):
+                        worker_task = asyncio.create_task(
+                            fp_parser.parse_worker(1, "test-ip", None, queue, [], library, stats, retry_map, active_workers)
+                        )
+                        await peer_simulator()
+                        await worker_task
+
+        assert "seller_delayed" in library
+        assert library["seller_delayed"]["status"] == "completed"
+
+    asyncio.run(_run())
+
+
+def test_fetch_page_retries_on_empty_200_ok(tmp_path, monkeypatch):
+    import fetch_ids
+    from unittest.mock import AsyncMock, patch
+
+    call_count = 0
+
+    class MockResp:
+        def __init__(self, status_code, text):
+            self.status_code = status_code
+            self.text = text
+
+    async def fake_get(url):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # 200 OK challenge page with no seller links
+            return MockResp(200, "<html><body><div>Verification required</div></body></html>")
+        # 200 OK real page
+        return MockResp(200, '<html><body><a href="/ru/funpay/99999"><span class="MuiChip-label">50</span></a></body></html>')
+
+    async def _run():
+        sem = asyncio.Semaphore(1)
+        good_proxies = set()
+        bad_proxies = set()
+        pool = ["http://p1:8080"]
+
+        mock_session = AsyncMock()
+        mock_session.get.side_effect = fake_get
+        mock_session.__aenter__.return_value = mock_session
+
+        with patch("fetch_ids.requests.AsyncSession", return_value=mock_session):
+            with patch("fetch_ids.asyncio.sleep", new=AsyncMock()):
+                with patch("fetch_ids.atomic_write_lines", return_value=True):
+                    res = await fetch_ids.fetch_page(1, pool, good_proxies, bad_proxies, str(tmp_path), sem)
+
+        assert res == [("99999", 50)]
+        assert call_count == 2
+
+    asyncio.run(_run())
+
+
+def test_parse_profile_handles_malformed_reviews_markup():
+    from unittest.mock import patch, MagicMock, AsyncMock
+    import parser as fp_parser
+
+    mock_client = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = '<html><body><span class="mr4">TestSeller</span></body></html>'
+    mock_client.get.return_value = mock_resp
+
+    with patch("parser.ReviewsParser") as mock_reviews_cls:
+        mock_parser = MagicMock()
+        mock_parser.parse.side_effect = IndexError("Malformed review node list")
+        mock_reviews_cls.return_value = mock_parser
+
+        res = asyncio.run(fp_parser.parse_profile(mock_client, "123456"))
+        assert res is None
+
+
+def test_proxy_credentials_numeric_password_preserves_ip_and_port(tmp_path):
+    proxy_file = tmp_path / "proxies.txt"
+    proxy_file.write_text("user:123456:1.2.3.4:8080\n", encoding="utf-8")
+    loaded = load_proxies(base_dir=str(tmp_path))
+    assert loaded == ["socks5://user:123456@1.2.3.4:8080"]
+    hidden = hide_proxy_credentials(loaded[0])
+    assert hidden == "1.2.3.4:8080"
+    assert "123456" not in hidden
+
+
+def test_init_db_immediate_transaction(tmp_path, monkeypatch):
+    test_db = tmp_path / "test_init_db.sqlite3"
+    monkeypatch.setenv("FUNPAY_DB_PATH", str(test_db))
+    db_mod.init_db()
+    with db_mod.get_connection() as conn:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        assert "schema_migrations" in tables
+        assert "sellers" in tables
+        assert "lots" in tables
+        assert "raw_snapshots" in tables
+
+
+def test_raw_lake_save_snapshot_deduplication(tmp_path, monkeypatch):
+    from funpay_analytics.storage.raw_lake import save_raw_snapshot
+    import gzip
+
+    monkeypatch.setenv("FUNPAY_DATA_DIR", str(tmp_path))
+    content = b"sample raw test payload"
+    sha1, path1 = save_raw_snapshot("test_source", content, "json")
+    sha2, path2 = save_raw_snapshot("test_source", content, "json")
+
+    assert sha1 == sha2
+    assert path1 == path2
+    file_path = tmp_path / "raw" / "test_source" / f"{sha1}.json.gz"
+    assert file_path.exists()
+    assert gzip.decompress(file_path.read_bytes()) == content
+
+
+def test_json_importer_null_reviews_and_string_lot_id(tmp_path, monkeypatch):
+    test_db = tmp_path / "test_json.sqlite3"
+    monkeypatch.setenv("FUNPAY_DB_PATH", str(test_db))
+    monkeypatch.setenv("FUNPAY_DATA_DIR", str(tmp_path))
+    db_mod.init_db()
+
+    payload = {
+        "schema_version": 2,
+        "seller_id": "777888",
+        "username": "SellerNullTest",
+        "currency": "RUB",
+        "categories": {
+            "Telegram": {
+                "candidate_lots": [
+                    {
+                        "id": "100500",
+                        "section": "Telegram",
+                        "text": "Telegram Premium",
+                        "price": "250,50 руб."
+                    }
+                ],
+                "reviews": None
+            }
+        }
+    }
+    json_file = tmp_path / "seller_null.json"
+    json_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    snapshot_id = import_seller_json(str(json_file))
+    assert snapshot_id > 0
+
+    with db_mod.get_connection() as conn:
+        lot = conn.execute("SELECT id, seller_id FROM lots WHERE id=100500").fetchone()
+        assert lot is not None
+        assert lot["id"] == 100500
+        assert lot["seller_id"] == 777888
+
+
+def test_extract_own_orders_mixed_separators_and_title_validation():
+    from bs4 import BeautifulSoup
+    from funpay_analytics.normalize.extract_own_orders import extract_orders, validate_orders
+
+    html = """
+    <a class="tc-item" href="https://funpay.com/orders/TESTCOMMAS/">
+        <div class="tc-order">#TESTCOMMAS</div>
+        <div class="order-desc">
+            <div>Discord Nitro 1 Year</div>
+            <div class="text-muted">Discord</div>
+        </div>
+        <div class="tc-price tc-seller-sum"> 1,234.56 <span class="unit">rub</span></div>
+    </a>
+    <a class="tc-item" href="https://funpay.com/orders/TESTNOTITLE/">
+        <div class="tc-order">#TESTNOTITLE</div>
+        <div class="order-desc">
+            <div></div>
+            <div class="text-muted">Empty</div>
+        </div>
+        <div class="tc-price tc-seller-sum"> 50.00 <span class="unit">rub</span></div>
+    </a>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    orders = extract_orders(soup)
+    assert len(orders) == 2
+    assert orders[0]["seller_total_minor"] == 123456
+
+    valid, errors = validate_orders(orders)
+    assert len(valid) == 1
+    assert valid[0]["order_id"] == "TESTCOMMAS"
+    assert len(errors) == 0
+
+
+def test_mark_proxy_error_threshold_retries(tmp_path):
+    import fetch_ids
+
+    good_proxies = set()
+    bad_proxies = set()
+    pool = ["http://proxy1:8080"]
+    proxy_errors = {}
+
+    fetch_ids.mark_proxy("http://proxy1:8080", "bad", str(tmp_path), good_proxies, bad_proxies, pool, proxy_errors, permanent=False)
+    assert "http://proxy1:8080" not in bad_proxies
+    assert proxy_errors["http://proxy1:8080"] == 1
+
+    fetch_ids.mark_proxy("http://proxy1:8080", "bad", str(tmp_path), good_proxies, bad_proxies, pool, proxy_errors, permanent=False)
+    assert "http://proxy1:8080" not in bad_proxies
+    assert proxy_errors["http://proxy1:8080"] == 2
+
+    fetch_ids.mark_proxy("http://proxy1:8080", "bad", str(tmp_path), good_proxies, bad_proxies, pool, proxy_errors, permanent=False)
+    assert "http://proxy1:8080" in bad_proxies
+
+
+def test_match_and_filter_lots_special_chars_category_does_not_match_all():
+    from parser import match_and_filter_lots
+
+    lots = [
+        {"section": "Steam Keys", "price": 100.0, "title": "Game key"},
+        {"section": "Discord Nitro", "price": 200.0, "title": "Nitro subscription"},
+    ]
+    categories_reviews = {
+        "***": [{"price": 100.0, "date": "1 day ago"}],
+    }
+
+    filtered = match_and_filter_lots(lots, categories_reviews)
+    assert "***" in filtered
+    assert len(filtered["***"]["candidate_lots"]) == 0
+
+
 
 

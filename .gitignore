@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.pyc
+*.egg-info/
+build/
+dist/
 
 # Local runtime & data
 *.db
@@ -38,7 +41,8 @@ queue.txt
 # Cache & intermediate runtime files
 market_report*.json
 library*.json
-*.tmp
+*.tmp*
+*.bak
 
 # Internal agent & audit artifacts (DO NOT PUBLISH)
 CRITIQUE_REPORT.md

@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Engine-curl--cffi_TLS_Impersonate-orange?style=for-the-badge" alt="curl-cffi" />
   <img src="https://img.shields.io/badge/Network-Async_Proxy_Pool-green?style=for-the-badge" alt="Proxy Pool" />
   <img src="https://img.shields.io/badge/Storage-SQLite_WAL_%2B_SHA--256_Lake-blueviolet?style=for-the-badge" alt="Storage" />
-  <img src="https://img.shields.io/badge/Tests-Pytest_52_Passed-success?style=for-the-badge&logo=pytest" alt="Pytest" />
+  <img src="https://img.shields.io/badge/Tests-Pytest_83_Passed-success?style=for-the-badge&logo=pytest" alt="Pytest" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
 </p>
 
@@ -19,12 +19,12 @@
 
 | Слой | Технологии и стандарты |
 | :--- | :--- |
-| **Network & Anti-Detect** | `curl_cffi` (TLS Impersonate: Chrome 120, Safari 15.5, Edge 101), HTTP/2 & Akamai Fingerprinting, `asyncio` |
+| **Network & Anti-Detect** | `curl_cffi` (TLS Impersonate: Chrome 120, Chrome 124, Edge 101), HTTP/2 & Akamai Fingerprinting, `asyncio` |
 | **Data Storage & Lake** | **SQLite** (`WAL-mode`, Foreign Keys, версионные SQL-миграции) + неизменяемое **Raw Gzip Data Lake** (`SHA-256` дедупликация) |
-| **Parsing & Normalization** | [`funpayparsers`](https://github.com/funpayhub/funpayparsers) (FunPay Hub), `BeautifulSoup4`, `selectolax`, `lxml`, MIME/MHTML потоковый декодер |
+| **Parsing & Normalization** | [`funpayparsers`](https://github.com/funpayhub/funpayparsers) (FunPay Hub), `BeautifulSoup4`, `selectolax`, MIME/MHTML потоковый декодер |
 | **Financial Math Engine** | Интервалы цен через `Decimal`, `Reverse Lot Matching Engine` |
 | **Interactive TUI & Logs** | `Rich` (интерактивные дашборды, таблицы, спиннеры), `Loguru` (ротация логов 10 MB, zip-компрессия, маскирование секретов) |
-| **Quality & Testing** | `pytest` (52 оффлайн-тестов: моки сетевого стека, проверка транзакций, регрессионное покрытие) |
+| **Quality & Testing** | `pytest` (83 оффлайн-тестов: моки сетевого стека, проверка транзакций, регрессионное покрытие) |
 
 ---
 
@@ -50,13 +50,13 @@ else:
 ---
 
 ### 2. 🥷 Детерминированный TLS-Fingerprinting (`curl_cffi`)
-* **Привязка отпечатков (`TLS Affinity`)**: Функция `get_browser_for_proxy()` детерминированно выбирает профиль браузера по URL прокси (`chrome110`, `chrome116`, `chrome120`, `edge101`, `safari15_5`).
+* **Привязка отпечатков (`TLS Affinity`)**: Функция `get_browser_for_proxy()` детерминированно выбирает профиль браузера по URL прокси (`chrome110`, `chrome116`, `chrome120`, `edge101`, `chrome124`).
 * **Эмуляция HTTP/2 & Akamai**: Имитация заголовков `Sec-Ch-Ua`, `Sec-Ch-Ua-Platform` и порядка шифров TLS.
 
 ```python
 def get_browser_for_proxy(proxy_url: str) -> str:
     """Выбирает профиль браузера по URL прокси."""
-    IMPERSONATES = ["chrome110", "chrome116", "chrome120", "edge101", "safari15_5"]
+    IMPERSONATES = ["chrome110", "chrome116", "chrome120", "edge101", "chrome124"]
     if not proxy_url:
         return "chrome120"
     hash_val = sum(ord(c) for c in proxy_url)

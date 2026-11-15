@@ -1,7 +1,11 @@
-import sqlite3
-import os
 import glob
+import os
+import sqlite3
 from contextlib import contextmanager
+from dotenv import load_dotenv
+from loguru import logger
+
+load_dotenv()
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 default_db_path = os.path.join(BASE_DIR, 'data', 'analytics.sqlite3')
@@ -48,7 +52,7 @@ def init_db():
     with get_db() as conn:
         conn.execute("PRAGMA journal_mode = WAL;")
         cursor = conn.cursor()
-        
+
         # We need to create schema_migrations first if it doesn't exist
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -57,35 +61,37 @@ def init_db():
             )
         """)
         conn.commit()
-        
+
         migration_files = sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql")))
         for file_path in migration_files:
             filename = os.path.basename(file_path)
             # Example: 001_initial.sql -> 1
             version = int(filename.split('_')[0])
-            
-            cursor.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (version,))
-            if not cursor.fetchone():
-                print(f"Applying migration: {filename}")
-                with open(file_path, 'r', encoding='utf-8') as f:
+
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (version,))
+                if cursor.fetchone():
+                    conn.rollback()
+                    continue
+
+                logger.info(f"Applying migration: {filename}")
+                with open(file_path, encoding='utf-8') as f:
                     sql_script = f.read()
-                try:
-                    if not conn.in_transaction:
-                        cursor.execute("BEGIN")
-                    for stmt in _split_sql_statements(sql_script):
-                        try:
-                            cursor.execute(stmt)
-                        except sqlite3.OperationalError as exc:
-                            if "duplicate column name" in str(exc).lower() and "alter table" in stmt.lower():
-                                continue
-                            raise
-                    cursor.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
-                    conn.commit()
-                except Exception as e:
-                    if conn.in_transaction:
-                        conn.rollback()
-                    raise Exception(f"Migration failed {filename}: {e}")
+                for stmt in _split_sql_statements(sql_script):
+                    try:
+                        cursor.execute(stmt)
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" in str(exc).lower() and "alter table" in stmt.lower():
+                            continue
+                        raise
+                cursor.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+                conn.commit()
+            except Exception as e:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise RuntimeError(f"Migration failed {filename}: {e}") from e
 
 if __name__ == '__main__':
     init_db()
-    print(f"Database initialized at {os.path.abspath(DB_PATH)}")
+    logger.info(f"Database initialized at {os.path.abspath(DB_PATH)}")

@@ -1,6 +1,4 @@
 import sys
-import os
-import re
 import json
 import time
 from pathlib import Path
@@ -23,6 +21,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.theme import Theme
+from rich.markup import escape
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -54,16 +53,23 @@ BANNER = f"""[bold {FP_BLUE}]╭────────────────
 
 def main():
     from utils import extract_user_id
+    from funpay_analytics.models import SellerSummary
+    from funpay_analytics.storage.db import get_db
+
     raw_arg = sys.argv[1] if len(sys.argv) > 1 else "14273448"
     seller_id = extract_user_id(raw_arg) or "14273448"
-    report_file = BASE_DIR / "reports_v2" / f"seller_{seller_id}.json"
+    report_file = (
+        Path(raw_arg)
+        if raw_arg.endswith(".json") and Path(raw_arg).is_file()
+        else (BASE_DIR / "reports_v2" / f"seller_{seller_id}.json")
+    )
 
     console.print(BANNER)
     console.print(f"[bold {FP_BLUE}]═══ ПАРСИНГ ОДНОГО ПРОДАВЦА ПО ID ═══[/bold {FP_BLUE}]")
     console.print(f"[bold {FP_WHITE}]Введите ID пользователя FunPay или ссылку на профиль (1804150):[/bold {FP_WHITE}] https://funpay.com/users/{seller_id}/")
     console.print(f"[bold {FP_WHITE}]Сколько последних отзывов собрать? ([bold {FP_BLUE}]Enter[/bold {FP_BLUE}] = все, или число, напр. 500) (все):[/bold {FP_WHITE}] все")
     console.print(f"[{FP_BLUE}]Найдено 18 прокси. Используем самый быстрый калиброванный узел...[/{FP_BLUE}]")
-    
+
     # Имитация логов сбора страниц
     log_entries = [
         ("INFO    ", "parser:parse_profile:94", f"[ID {seller_id}] Начинаем парсинг (через прокси socks5://192.0.2.10:1080)...", "0.03"),
@@ -91,26 +97,51 @@ def main():
         console.print(f"2026-11-01 22:28:00 | [bold {lvl_color}]{level}[/bold {lvl_color}] | {loc} - {msg}")
         time.sleep(float(delay))
 
-    if not report_file.exists():
-        console.print(f"[bold red]Файл отчета {report_file} не найден![/bold red]")
+    summary: SellerSummary | None = None
+
+    # 1. Попытка загрузить напрямую из SQLite базы данных
+    try:
+        numeric_id = int(seller_id)
+        with get_db() as conn:
+            summary = SellerSummary.from_db(conn, numeric_id)
+    except Exception:
+        summary = None
+
+    # 2. Фолбэк на локальный JSON отчет (если нет в БД)
+    if summary is None and report_file.exists():
+        try:
+            with open(report_file, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                summary = SellerSummary.from_dict(data)
+                if str(seller_id).isdigit():
+                    summary.seller_id = int(seller_id)
+            else:
+                console.print("[bold red]❌ Некорректный формат отчета (ожидается dict)[/bold red]")
+                return
+        except Exception as e:
+            console.print(f"[bold red]❌ Ошибка чтения отчета {report_file.name}: {escape(str(e))}[/bold red]")
+            return
+
+    if summary is None:
+        console.print(f"[bold red]Файл отчета {report_file} не найден и продавец ID {seller_id} отсутствует в БД![/bold red]")
         return
 
-    with open(report_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    username = data.get("username", "W1bbex")
-    total_reviews = data.get("total_reviews", 2068)
-    categories = data.get("categories", {})
+    safe_username = escape(str(summary.username))
+    total_reviews = summary.total_reviews
+    categories = summary.categories
     elapsed = 273.60
 
     console.print(f"\n[bold {FP_BLUE}]✅ Успешно обработан за {elapsed:.2f} сек![/bold {FP_BLUE}]")
 
+    rating_str = f" ★ {summary.rating:.2f}" if summary.rating is not None else ""
     console.print(Panel(
-        f"[{FP_BLUE}]Никнейм:[/{FP_BLUE}] [bold {FP_WHITE}]{username}[/bold {FP_WHITE}] [{FP_BLUE}](ID: {seller_id})[/{FP_BLUE}]\n"
+        f"[{FP_BLUE}]Никнейм:[/{FP_BLUE}] [bold {FP_WHITE}]{safe_username}[/bold {FP_WHITE}] [{FP_BLUE}](ID: {summary.seller_id}){rating_str}[/{FP_BLUE}]\n"
         f"[{FP_BLUE}]Всего отзывов:[/{FP_BLUE}] [bold {FP_BLUE}]{total_reviews:,}[/bold {FP_BLUE}]\n"
         f"[{FP_BLUE}]Скорость сбора:[/{FP_BLUE}] [bold {FP_WHITE}]{total_reviews / elapsed if elapsed > 0 else 0:.1f} отз/сек[/bold {FP_WHITE}]\n"
-        f"[{FP_BLUE}]Категорий с продажами:[/{FP_BLUE}] [bold {FP_BLUE}]{len(categories)}[/bold {FP_BLUE}]",
-        title=f"[bold {FP_WHITE}]👤 Профиль: {username}[/bold {FP_WHITE}]",
+        f"[{FP_BLUE}]Категорий с продажами:[/{FP_BLUE}] [bold {FP_BLUE}]{len(categories)}[/bold {FP_BLUE}]\n"
+        f"[{FP_BLUE}]Источник данных:[/{FP_BLUE}] [bold {'#28A745' if summary.source == 'sqlite' else FP_BLUE}]{'SQLite (analytics.sqlite3)' if summary.source == 'sqlite' else report_file.name}[/]",
+        title=f"[bold {FP_WHITE}]👤 Профиль: {safe_username}[/bold {FP_WHITE}]",
         border_style=FP_BLUE
     ))
 
@@ -124,30 +155,14 @@ def main():
     table.add_column("Сумма по отзывам", justify="right", style=f"bold {FP_BLUE}")
     table.add_column("Кандидатов лотов", justify="right", style=f"bold {FP_BLUE}")
 
-    # Сортируем по сумме продаж для наглядности
-    cat_items = []
-    def _parse_price(val):
-        if isinstance(val, (int, float)):
-            return float(val)
-        cleaned = re.sub(r"[^\d.]", "", str(val or 0.0))
-        try:
-            return float(cleaned) if cleaned else 0.0
-        except ValueError:
-            return 0.0
-
-    for cat_name, cat_data in categories.items():
-        revs = cat_data.get("reviews", [])
-        lots = cat_data.get("candidate_lots", [])
-        total_sum = sum(_parse_price(r.get("price")) for r in revs if isinstance(r, dict))
-        cat_items.append((cat_name, len(revs), total_sum, len(lots)))
-
-    cat_items.sort(key=lambda x: x[2], reverse=True)
-
-    for cat_name, rev_count, total_sum, lot_count in cat_items:
-        table.add_row(cat_name, f"{rev_count:,}", f"{total_sum:,.2f} RUB", str(lot_count))
+    for cat in categories:
+        table.add_row(cat.name, f"{cat.review_count:,}", f"{cat.total_rub:,.2f} RUB", str(cat.lot_count))
 
     console.print(table)
-    console.print(f"[{FP_BLUE}]Отчет сохранен в {report_file}[/{FP_BLUE}]\n")
+    if summary.source == "sqlite":
+        console.print(f"[{FP_BLUE}]Данные получены напрямую из SQLite базы данных.[/{FP_BLUE}]\n")
+    else:
+        console.print(f"[{FP_BLUE}]Отчет загружен из {report_file}[/{FP_BLUE}]\n")
 
 if __name__ == "__main__":
     main()

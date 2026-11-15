@@ -34,8 +34,12 @@ def main():
     args = parser.parse_args()
 
     if args.command == "init-db":
-        init_db()
-        print("База данных успешно инициализирована.")
+        try:
+            init_db()
+            print("База данных успешно инициализирована.")
+        except Exception as e:
+            print(f"Ошибка инициализации базы данных: {e}", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "import-own-orders":
         try:
             inserted = extractor.import_orders(args.html, allow_partial=args.allow_partial)

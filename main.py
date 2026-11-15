@@ -1,11 +1,9 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 import time
 import json
 import asyncio
 import subprocess
-import re
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -31,6 +29,10 @@ from rich.table import Table
 from rich.prompt import Prompt, Confirm
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.theme import Theme
+from rich.markup import escape
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from curl_cffi import requests
 from utils import atomic_write_json, get_browser_for_proxy, extract_user_id, parse_price, load_proxies
@@ -110,7 +112,7 @@ def show_market_analytics():
         report_file = BASE_DIR / "market_report.json"
     if not report_file.exists():
         report_file = BASE_DIR / "examples" / "market_report.example.json"
-        
+
     if not report_file.exists():
         console.print(f"[bold {FP_WHITE}]❌ Файл отчета market_report.json / market_report_v2.json не найден![/bold {FP_WHITE}]")
         input("\nНажмите Enter для возврата в меню...")
@@ -118,19 +120,19 @@ def show_market_analytics():
 
     try:
         data = json.loads(report_file.read_text(encoding="utf-8"))
-    except Exception:
-        console.print(f"[bold {FP_WHITE}]❌ Ошибка чтения отчета[/bold {FP_WHITE}]")
+    except Exception as e:
+        console.print(f"[bold {FP_WHITE}]❌ Ошибка чтения отчета {report_file.name}: {escape(str(e))}[/bold {FP_WHITE}]")
         input("\nНажмите Enter...")
         return
-        
+
     total_sellers = len(data) if isinstance(data, list) else 0
     if not isinstance(data, list):
         console.print(f"[bold {FP_WHITE}]❌ Некорректный формат отчета (ожидается список продавцов)[/bold {FP_WHITE}]")
         input("\nНажмите Enter...")
         return
 
-    total_reviews = sum(x.get("total_reviews", 0) for x in data if isinstance(x, dict))
-    
+    total_reviews = sum((x.get("total_reviews") or 0) for x in data if isinstance(x, dict))
+
     categories = {}
     total_earned = 0.0
     for s in data:
@@ -143,20 +145,20 @@ def show_market_analytics():
                 continue
             if cat not in categories:
                 categories[cat] = {"count": 0, "earned": 0.0}
-            
+
             # v1 schema: {"count": ..., "earned": ...}
             if "count" in c_data or "earned" in c_data:
-                cnt = c_data.get("count", 0)
+                cnt = c_data.get("count") or 0
                 ernd = parse_price(c_data.get("earned", 0.0))
             # v2 schema: {"reviews": [...], "candidate_lots": [...]}
             elif "reviews" in c_data:
-                revs = c_data.get("reviews", [])
+                revs = c_data.get("reviews") or []
                 cnt = len(revs)
                 ernd = sum(parse_price(r.get("price")) for r in revs if isinstance(r, dict))
             else:
                 cnt = 0
                 ernd = 0.0
-                
+
             categories[cat]["count"] += cnt
             categories[cat]["earned"] += ernd
             calc_s_earned += ernd
@@ -194,41 +196,53 @@ def show_market_analytics():
 async def run_full_pipeline():
     try:
         console.print(f"\n[bold {FP_BLUE}]═══ ПОЛНЫЙ ЦИКЛ ПАРСИНГА РЫНКА (RMTHub ➔ FunPay ➔ Отчет) ═══[/bold {FP_BLUE}]\n")
-        
+
         queue_file = BASE_DIR / "queue.txt"
-        has_queue = queue_file.exists() and queue_file.stat().st_size > 0
+        q_count = 0
+        if queue_file.exists():
+            with open(queue_file, encoding="utf-8") as f:
+                q_count = len([line for line in f if line.strip() and not line.strip().startswith('#')])
+        has_queue = q_count > 0
         refetch = True
-        
+
         if has_queue:
-            with open(queue_file, "r", encoding="utf-8") as f:
-                q_count = len([line for line in f if line.strip()])
             console.print(f"[{FP_BLUE}]Найдена готовая очередь:[/{FP_BLUE}] [bold {FP_WHITE}]{q_count}[/bold {FP_WHITE}] [{FP_BLUE}]продавцов в queue.txt[/{FP_BLUE}]")
             refetch = not Confirm.ask(f"[{FP_WHITE}]Использовать текущую очередь продавцов?[/{FP_WHITE}]", default=True)
 
         if refetch:
-            console.print(f"\n[bold {FP_BLUE}]1. Сбор топа продавцов с RMTHub...[/bold {FP_BLUE}]")
-            target = Prompt.ask(f"[{FP_WHITE}]Сколько топ-продавцов собрать с RMTHub?[/{FP_WHITE}]", default="100")
-            try:
-                target_count = int(target)
-            except Exception:
-                target_count = 100
-                
-            pages = max(1, (target_count + 19) // 20)
-            console.print(f"[{FP_BLUE}]Стягиваем {pages} страниц с rmthub.com...[/{FP_BLUE}]")
-            await fetch_ids.main(target_count=target_count)
+            failed_file = BASE_DIR / "failed_pages.txt"
+            use_failed = False
+            if failed_file.exists() and failed_file.stat().st_size > 0:
+                use_failed = Confirm.ask(f"[{FP_WHITE}]Найден файл failed_pages.txt. Перепарсить только упавшие страницы?[/{FP_WHITE}]", default=True)
+
+            if use_failed:
+                await fetch_ids.main(use_failed_only=True)
+            else:
+                console.print(f"\n[bold {FP_BLUE}]1. Сбор топа продавцов с RMTHub...[/bold {FP_BLUE}]")
+                target = Prompt.ask(f"[{FP_WHITE}]Сколько топ-продавцов собрать с RMTHub?[/{FP_WHITE}]", default="100")
+                try:
+                    target_count = int(target)
+                    if target_count <= 0:
+                        target_count = 100
+                except Exception:
+                    target_count = 100
+
+                pages = max(1, (target_count + 19) // 20)
+                console.print(f"[{FP_BLUE}]Стягиваем {pages} страниц с rmthub.com...[/{FP_BLUE}]")
+                await fetch_ids.main(target_count=target_count)
 
         console.print(f"\n[bold {FP_BLUE}]2. Запуск массового параллельного парсера FunPay...[/bold {FP_BLUE}]")
         from parser import main_async as run_mass_parser_async
         success = await run_mass_parser_async()
         if success is False:
-            console.print(f"\n[bold red][!] Внимание: Парсинг завершился с ошибками: не все задачи в очереди были обработаны![/bold red]")
+            console.print("\n[bold red][!] Внимание: Парсинг завершился с ошибками: не все задачи в очереди были обработаны![/bold red]")
         else:
             console.print(f"\n[bold {FP_BLUE}]✅ Массовый парсинг завершен! Отчет обновлен в market_report_v2.json[/bold {FP_BLUE}]")
         input("\nНажмите Enter для просмотра аналитики...")
         show_market_analytics()
     except (KeyboardInterrupt, asyncio.CancelledError):
         console.print(f"\n[bold {FP_BLUE}][!] Сбор рынка прерван пользователем.[/bold {FP_BLUE}]")
-        input("\nНажмите Enter для возврата в меню...")
+        raise
 
 async def run_single_seller_parse():
     try:
@@ -237,10 +251,11 @@ async def run_single_seller_parse():
             f"[bold {FP_WHITE}]Введите ID пользователя FunPay или ссылку на профиль[/bold {FP_WHITE}]",
             default="1804150"
         )
-        
+
         user_id = extract_user_id(user_input)
         if not user_id:
-            console.print(f"\n[bold {FP_WHITE}]❌ '{user_input.strip()}' — это текстовый никнейм, а не ID![/bold {FP_WHITE}]")
+            safe_input = escape(user_input.strip())
+            console.print(f"\n[bold {FP_WHITE}]❌ '{safe_input}' — это текстовый никнейм, а не ID![/bold {FP_WHITE}]")
             console.print(f"[{FP_BLUE}]На FunPay профили адресуются только по числовому ID пользователя или ссылке.[/{FP_BLUE}]")
             console.print(f"[{FP_BLUE}]Пример: 14273448 или https://funpay.com/users/14273448/[/{FP_BLUE}]")
             input("\nНажмите Enter для возврата в меню...")
@@ -253,12 +268,18 @@ async def run_single_seller_parse():
         max_reviews = int(limit_raw.strip()) if limit_raw.strip().isdigit() else None
 
         proxies = load_proxies()
+        good_path = BASE_DIR / "good_proxies.txt"
+        has_good = good_path.exists() and good_path.stat().st_size > 0
+        if not has_good:
+            console.print(f"[bold {FP_BLUE}][!] Внимание: good_proxies.txt пуст. Запустите калибровку (пункт 2) или будет произведена попытка прямого соединения / доступных прокси.[/bold {FP_BLUE}]")
+
         if not proxies:
-            console.print(f"[bold {FP_BLUE}][!] Внимание: good_proxies.txt пуст. Прямое соединение к FunPay из РФ может блокироваться TLS error 35.[/bold {FP_BLUE}]")
             proxy_candidates = [None]
         else:
-            console.print(f"[{FP_BLUE}]Найдено {len(proxies)} прокси. Используем самый быстрый калиброванный узел...[/{FP_BLUE}]")
-            proxy_candidates = proxies[:5]
+            console.print(f"[{FP_BLUE}]Найдено {len(proxies)} прокси. Используем доступные узлы...[/{FP_BLUE}]")
+            proxy_candidates = list(proxies[:5])
+            if None not in proxy_candidates:
+                proxy_candidates.append(None)
 
         res = None
         start_time = time.time()
@@ -279,7 +300,7 @@ async def run_single_seller_parse():
                 if res:
                     break
             except Exception as e:
-                console.print(f"[{FP_BLUE}]Сбой узла: {e}[/{FP_BLUE}]")
+                console.print(f"[{FP_BLUE}]Сбой узла: {escape(str(e))}[/{FP_BLUE}]")
 
         elapsed = time.time() - start_time
 
@@ -289,17 +310,18 @@ async def run_single_seller_parse():
             return
 
         username = res.get("username", "Неизвестно")
+        safe_username = escape(str(username))
         total_reviews = res.get("total_reviews", 0)
         categories = res.get("categories", {})
 
         console.print(f"\n[bold {FP_BLUE}]✅ Успешно обработан за {elapsed:.2f} сек![/bold {FP_BLUE}]")
-        
+
         console.print(Panel(
-            f"[{FP_BLUE}]Никнейм:[/{FP_BLUE}] [bold {FP_WHITE}]{username}[/bold {FP_WHITE}] [{FP_BLUE}](ID: {user_id})[/{FP_BLUE}]\n"
+            f"[{FP_BLUE}]Никнейм:[/{FP_BLUE}] [bold {FP_WHITE}]{safe_username}[/bold {FP_WHITE}] [{FP_BLUE}](ID: {user_id})[/{FP_BLUE}]\n"
             f"[{FP_BLUE}]Всего отзывов:[/{FP_BLUE}] [bold {FP_BLUE}]{total_reviews:,}[/bold {FP_BLUE}]\n"
             f"[{FP_BLUE}]Скорость сбора:[/{FP_BLUE}] [bold {FP_WHITE}]{total_reviews / elapsed if elapsed > 0 else 0:.1f} отз/сек[/bold {FP_WHITE}]\n"
             f"[{FP_BLUE}]Категорий с продажами:[/{FP_BLUE}] [bold {FP_BLUE}]{len(categories)}[/bold {FP_BLUE}]",
-            title=f"[bold {FP_WHITE}]👤 Профиль: {username}[/bold {FP_WHITE}]",
+            title=f"[bold {FP_WHITE}]👤 Профиль: {safe_username}[/bold {FP_WHITE}]",
             border_style=FP_BLUE
         ))
 
@@ -314,22 +336,24 @@ async def run_single_seller_parse():
         table.add_column("Кандидатов лотов", justify="right", style=f"bold {FP_BLUE}")
 
         for cat_name, cat_data in categories.items():
-            revs = cat_data.get("reviews", [])
-            lots = cat_data.get("candidate_lots", [])
+            revs = (cat_data.get("reviews") or []) if isinstance(cat_data, dict) else []
+            lots = (cat_data.get("candidate_lots") or []) if isinstance(cat_data, dict) else []
             total_sum = sum(parse_price(r.get("price")) for r in revs if isinstance(r, dict))
             table.add_row(cat_name, str(len(revs)), f"{total_sum:,.2f} RUB", str(len(lots)))
 
         console.print(table)
-        
+
         reports_dir = BASE_DIR / "reports_v2"
         reports_dir.mkdir(parents=True, exist_ok=True)
         out_file = str(reports_dir / f"seller_{user_id}.json")
-        atomic_write_json(out_file, res)
-        console.print(f"[{FP_BLUE}]Отчет сохранен в {out_file}[/{FP_BLUE}]")
+        if atomic_write_json(out_file, res):
+            console.print(f"[{FP_BLUE}]Отчет сохранен в {out_file}[/{FP_BLUE}]")
+        else:
+            console.print(f"[bold red]❌ Не удалось сохранить отчет в {out_file}[/bold red]")
         input("\nНажмите Enter для возврата в меню...")
     except (KeyboardInterrupt, asyncio.CancelledError):
         console.print(f"\n[bold {FP_BLUE}][!] Парсинг продавца прерван пользователем.[/bold {FP_BLUE}]")
-        input("\nНажмите Enter для возврата в меню...")
+        raise
 
 async def run_proxy_manager():
     proxy_file = BASE_DIR / "proxies.txt"
@@ -337,7 +361,7 @@ async def run_proxy_manager():
         proxy_file.write_text("# Формат: ip:port:user:pass ИЛИ ip:port ИЛИ http://user:pass@ip:port\n", encoding="utf-8")
 
     proxies = load_proxies()
-    
+
     console.print(Panel(
         f"[{FP_BLUE}]Файл с прокси:[/{FP_BLUE}] [bold {FP_WHITE}]{proxy_file}[/bold {FP_WHITE}]\n"
         f"[{FP_BLUE}]Загружено в память:[/{FP_BLUE}] [bold {FP_BLUE}]{len(proxies)}[/bold {FP_BLUE}] [{FP_WHITE}]прокси[/{FP_WHITE}]\n\n"
@@ -358,7 +382,10 @@ async def run_proxy_manager():
 
     if choice == "2":
         if sys.platform == "win32":
-            subprocess.Popen(["notepad.exe", str(proxy_file)])
+            try:
+                os.startfile(str(proxy_file))
+            except Exception:
+                subprocess.Popen(["notepad.exe", str(proxy_file)])
             console.print(f"[bold {FP_BLUE}]Блокнот открыт! Сохраните файл после добавления прокси.[/bold {FP_BLUE}]")
         else:
             console.print(f"[{FP_WHITE}]Откройте файл: {proxy_file}[/{FP_WHITE}]")
@@ -370,14 +397,16 @@ async def run_proxy_manager():
                 valid = await ping_and_rank(proxies)
         except (KeyboardInterrupt, asyncio.CancelledError):
             console.print(f"\n[bold {FP_BLUE}][!] Калибровка прокси отменена пользователем.[/bold {FP_BLUE}]")
-            input("\nНажмите Enter для возврата в меню...")
-            return
-            
+            raise
+
         good_urls = [v['url'] for v in valid if v.get('url')]
+        good_file = BASE_DIR / "good_proxies.txt"
         if good_urls:
-            good_file = BASE_DIR / "good_proxies.txt"
             good_file.write_text("\n".join(good_urls) + "\n", encoding="utf-8")
             console.print(f"\n[bold {FP_BLUE}]✅ Сохранено [bold {FP_WHITE}]{len(good_urls)}[/bold {FP_WHITE}] рабочих прокси в good_proxies.txt[/bold {FP_BLUE}]\n")
+        else:
+            good_file.write_text("", encoding="utf-8")
+            console.print(f"\n[bold {FP_BLUE}][!] Ни один прокси не ответил. good_proxies.txt очищен.[/bold {FP_BLUE}]\n")
 
         table = Table(
             title=f"[bold {FP_WHITE}]Статус прокси-серверов[/bold {FP_WHITE}]",
@@ -408,23 +437,27 @@ def main_menu():
 
             choice = Prompt.ask(f"[bold {FP_BLUE}]Ввод[/bold {FP_BLUE}]", choices=["0", "1", "2", "3", "4"], default="1")
 
-            if choice == "1":
-                asyncio.run(run_full_pipeline())
-            elif choice == "2":
-                show_market_analytics()
-            elif choice == "3":
-                asyncio.run(run_single_seller_parse())
-            elif choice == "4":
-                asyncio.run(run_proxy_manager())
-            elif choice == "0":
-                console.print(f"[{FP_BLUE}]Выход...[/{FP_BLUE}]")
-                break
+            try:
+                if choice == "1":
+                    asyncio.run(run_full_pipeline())
+                elif choice == "2":
+                    show_market_analytics()
+                elif choice == "3":
+                    asyncio.run(run_single_seller_parse())
+                elif choice == "4":
+                    asyncio.run(run_proxy_manager())
+                elif choice == "0":
+                    console.print(f"[{FP_BLUE}]Выход...[/{FP_BLUE}]")
+                    break
+            except KeyboardInterrupt:
+                console.print(f"\n[bold {FP_BLUE}][!] Действие прервано пользователем (Ctrl+C).[/bold {FP_BLUE}]")
+                input("\nНажмите Enter для возврата в меню...")
         except (KeyboardInterrupt, EOFError):
             console.print(f"\n[bold {FP_BLUE}]Выход из программы...[/bold {FP_BLUE}]")
             break
         except Exception as e:
-            console.print(f"\n[bold {FP_WHITE}]Ошибка выполнения: {e}[/bold {FP_WHITE}]")
-            time.sleep(1.5)
+            console.print(f"\n[bold {FP_WHITE}]Ошибка выполнения: {escape(str(e))}[/bold {FP_WHITE}]")
+            input("\nНажмите Enter для возврата в меню...")
 
 if __name__ == "__main__":
     if os.name == 'nt':

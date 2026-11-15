@@ -1,3 +1,4 @@
-# Format: ip:port or protocol://user:pass@ip:port
+# Format: ip:port, ip:port:user:pass, user:pass:ip:port, or protocol://user:pass@ip:port
 # 127.0.0.1:8080
+# 1.2.3.4:1080:username:password
 # socks5://user:pass@1.2.3.4:1080

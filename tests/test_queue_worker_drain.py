@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 from unittest.mock import patch, AsyncMock
 from parser import parse_worker, mass_parse
 
@@ -19,13 +18,14 @@ def test_parse_worker_exits_on_consecutive_errors():
 
         # Mock parse_profile to always return None (simulating failure)
         with patch("parser.parse_profile", new=AsyncMock(return_value=None)):
-            with patch("parser.requests.AsyncSession") as mock_session_cls:
-                mock_session = AsyncMock()
-                mock_session.__aenter__.return_value = mock_session
-                mock_session_cls.return_value = mock_session
+            with patch("parser.asyncio.sleep", new=AsyncMock()):
+                with patch("parser.requests.AsyncSession") as mock_session_cls:
+                    mock_session = AsyncMock()
+                    mock_session.__aenter__.return_value = mock_session
+                    mock_session_cls.return_value = mock_session
 
-                # Worker will fail 3 times and break
-                await parse_worker(1, "test-ip", "http://fake-proxy:8080", queue, results, library, stats, retry_map)
+                    # Worker will fail 3 times and break
+                    await parse_worker(1, "test-ip", "http://fake-proxy:8080", queue, results, library, stats, retry_map)
 
         # Worker should have exited after consecutive errors, leaving items in queue
         assert queue.qsize() > 0
@@ -36,6 +36,7 @@ def test_parse_worker_exits_on_consecutive_errors():
 
 def test_mass_parse_detects_undrained_queue(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("parser.BASE_DIR", str(tmp_path))
     (tmp_path / "queue.txt").write_text("1001:5\n1002:10\n1003:15\n", encoding="utf-8")
 
     library = {}
@@ -66,7 +67,9 @@ def test_atomic_write_json_returns_boolean_status(tmp_path, monkeypatch):
     assert atomic_write_json(str(target), {"key": "new_val"}) is False
 
 
-def test_parse_worker_does_not_mark_completed_when_atomic_write_fails():
+def test_parse_worker_does_not_mark_completed_when_atomic_write_fails(tmp_path, monkeypatch):
+    import parser as fp_parser
+    monkeypatch.setattr(fp_parser, "BASE_DIR", str(tmp_path))
     async def _run():
         queue = asyncio.Queue()
         queue.put_nowait("5555")
@@ -77,12 +80,13 @@ def test_parse_worker_does_not_mark_completed_when_atomic_write_fails():
         retry_map = {}
 
         with patch("parser.parse_profile", new=AsyncMock(return_value={"total_reviews": 10})):
-            with patch("parser.requests.AsyncSession") as mock_session_cls:
-                mock_session = AsyncMock()
-                mock_session.__aenter__.return_value = mock_session
-                mock_session_cls.return_value = mock_session
-                with patch("parser.atomic_write_json", return_value=False):
-                    await parse_worker(1, "test-ip", None, queue, results, library, stats, retry_map)
+            with patch("parser.asyncio.sleep", new=AsyncMock()):
+                with patch("parser.requests.AsyncSession") as mock_session_cls:
+                    mock_session = AsyncMock()
+                    mock_session.__aenter__.return_value = mock_session
+                    mock_session_cls.return_value = mock_session
+                    with patch("parser.atomic_write_json", return_value=False):
+                        await parse_worker(1, "test-ip", None, queue, results, library, stats, retry_map)
 
         assert library.get("5555", {}).get("status") != "completed"
         assert stats["parsed_count"] == 0
@@ -96,6 +100,7 @@ def test_batch_with_every_seller_failed_is_not_success(tmp_path, monkeypatch):
     import parser as fp_parser
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fp_parser, "BASE_DIR", str(tmp_path))
     (tmp_path / "queue.txt").write_text("12345:1\n", encoding="utf-8")
     monkeypatch.setattr(fp_parser, "parse_profile", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -104,6 +109,7 @@ def test_batch_with_every_seller_failed_is_not_success(tmp_path, monkeypatch):
         AsyncMock(return_value=[{"name": "offline", "url": None}]),
     )
     monkeypatch.setattr(fp_parser.random, "uniform", lambda *_: 0)
+    monkeypatch.setattr(fp_parser.asyncio, "sleep", AsyncMock())
     success = asyncio.run(fp_parser.main_async())
     library = json.loads((tmp_path / "library_v2.json").read_text(encoding="utf-8"))
     assert library["12345"]["status"] == "failed"
