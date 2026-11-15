@@ -2,24 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import random
-import sys
 from typing import Any
 
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 from funpayparsers.parsers.reviews_parser import ReviewsParser as DefaultReviewsParser
-from utils import hide_proxy_credentials, logger
+
+from funpay_analytics.core import hide_proxy_credentials, logger
 
 from funpay_analytics.parser.lot_filter import extract_profile_lots, match_and_filter_lots
 
 FUNPAY_COOKIES = {"cy": "rub", "locale": "ru"}
-
-
-def _get_reviews_parser():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "ReviewsParser"):
-        return parser_mod.ReviewsParser
-    return DefaultReviewsParser
 
 
 def get_smart_delay(is_proxy: bool = False) -> float:
@@ -45,8 +38,11 @@ async def fetch_seller_reviews(
     headers: dict[str, str],
     proxy: str | None = None,
     max_reviews: int | None = None,
+    reviews_parser_cls: Any = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], int] | None:
     """Performs pagination and collects reviews for the target seller."""
+    if reviews_parser_cls is None:
+        reviews_parser_cls = DefaultReviewsParser
     total_reviews = 0
     categories_reviews: dict[str, list[dict[str, Any]]] = {}
 
@@ -133,7 +129,6 @@ async def fetch_seller_reviews(
             return None
 
         try:
-            reviews_parser_cls = _get_reviews_parser()
             next_batch = reviews_parser_cls(html_text2).parse()
         except Exception as e:
             logger.error(f"[ID {user_id}] Ошибка разбора структуры отзывов на стр {page}: {e}")
@@ -158,20 +153,24 @@ async def parse_profile(
     proxy: str | None = None,
     user_agent: str | None = None,
     max_reviews: int | None = None,
+    reviews_parser_cls: Any = None,
 ) -> dict[str, Any] | None:
     """Parses full seller profile and associates candidate lots with reviews."""
+    if reviews_parser_cls is None:
+        reviews_parser_cls = DefaultReviewsParser
     if not user_agent:
         user_agent = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
     url = f"https://funpay.com/users/{user_id}/"
+    platform = '"macOS"' if ("Macintosh" in user_agent or "Mac OS X" in user_agent) else '"Windows"'
     headers = {
         "User-Agent": user_agent,
         "X-Requested-With": "XMLHttpRequest",
         "Sec-Ch-Ua": '"Not.A/Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
         "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Ch-Ua-Platform": platform,
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     }
@@ -197,9 +196,16 @@ async def parse_profile(
                     "Требуется рабочий прокси."
                 )
                 return None
-            if "429" in err_msg and attempt < 1:
-                logger.warning(f"[ID {user_id}] Блок 429 на профиле. Пауза 5с перед повтором...")
-                await asyncio.sleep(5.0)
+            if "404" in err_msg or (hasattr(e, "response") and getattr(e.response, "status_code", None) == 404):
+                logger.warning(f"[ID {user_id}] Пользователь не найден (404).")
+                return None
+            if attempt < 1:
+                if "429" in err_msg:
+                    logger.warning(f"[ID {user_id}] Блок 429 на профиле. Пауза 5с перед повтором...")
+                    await asyncio.sleep(5.0)
+                else:
+                    logger.warning(f"[ID {user_id}] Временная ошибка доступа ({e}). Повтор через 2с...")
+                    await asyncio.sleep(2.0)
                 continue
             logger.error(f"[ID {user_id}] Ошибка доступа: {e}")
             return None
@@ -216,7 +222,6 @@ async def parse_profile(
 
     all_active_lots = extract_profile_lots(soup, user_id)
     try:
-        reviews_parser_cls = _get_reviews_parser()
         batch = reviews_parser_cls(html_text).parse()
     except Exception as e:
         logger.error(f"[ID {user_id}] Ошибка разбора структуры профиля: {e}")
@@ -224,7 +229,14 @@ async def parse_profile(
     actual_user_id = str(batch.user_id) if batch.user_id else str(user_id)
 
     review_res = await fetch_seller_reviews(
-        client, user_id, actual_user_id, batch, headers, proxy=proxy, max_reviews=max_reviews
+        client,
+        user_id,
+        actual_user_id,
+        batch,
+        headers,
+        proxy=proxy,
+        max_reviews=max_reviews,
+        reviews_parser_cls=reviews_parser_cls,
     )
     if review_res is None:
         return None

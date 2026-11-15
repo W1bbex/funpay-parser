@@ -68,7 +68,7 @@ class SellerSummary:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SellerSummary:
         """Constructs a SellerSummary from a report dict (e.g. from JSON)."""
-        from utils import parse_price
+        from funpay_analytics.core import parse_price
 
         raw_id = data.get("seller_id", 0)
         try:
@@ -106,11 +106,20 @@ class SellerSummary:
         if not total_reviews and categories:
             total_reviews = sum(c.review_count for c in categories)
 
+        raw_rating = data.get("rating")
+        rating: float | None = None
+        if raw_rating is not None:
+            try:
+                rating = float(raw_rating)
+            except (TypeError, ValueError):
+                rating = None
+
         categories.sort(key=lambda c: c.total_rub, reverse=True)
         return cls(
             seller_id=seller_id,
             username=username,
             total_reviews=total_reviews,
+            rating=rating,
             source="json",
             categories=categories,
         )
@@ -131,31 +140,58 @@ class SellerSummary:
         rating = float(seller_row[2]) if seller_row[2] is not None else None
         total_reviews = int(seller_row[3]) if seller_row[3] is not None else 0
 
+        # Aggregate reviews from the most recent snapshot containing reviews for this seller
         cursor.execute(
             """
             SELECT category_text, COUNT(*) as rev_c, COALESCE(SUM(price_minor), 0) as sum_minor
             FROM reviews
-            WHERE seller_id = ? AND category_text IS NOT NULL
+            WHERE seller_id = ?
+              AND raw_snapshot_id = (
+                  SELECT raw_snapshot_id FROM reviews WHERE seller_id = ? ORDER BY raw_snapshot_id DESC LIMIT 1
+              )
+              AND category_text IS NOT NULL
             GROUP BY category_text
             """,
-            (seller_id,),
+            (seller_id, seller_id),
         )
         cat_stats = {
             row[0]: {"review_count": int(row[1]), "total_rub": float(row[2]) / 100.0}
             for row in cursor.fetchall()
         }
 
+        # Aggregate candidate lots from the most recent candidate snapshot
         cursor.execute(
             """
             SELECT scl.category_text, COUNT(DISTINCT scl.lot_id) as lot_c
             FROM snapshot_candidate_lots scl
-            JOIN raw_snapshots rs ON scl.raw_snapshot_id = rs.id
-            WHERE rs.seller_id = ?
+            WHERE scl.raw_snapshot_id = (
+                SELECT scl2.raw_snapshot_id
+                FROM snapshot_candidate_lots scl2
+                JOIN raw_snapshots rs ON scl2.raw_snapshot_id = rs.id
+                WHERE rs.seller_id = ?
+                ORDER BY scl2.raw_snapshot_id DESC LIMIT 1
+            )
             GROUP BY scl.category_text
             """,
             (seller_id,),
         )
         lot_counts = {row[0]: int(row[1]) for row in cursor.fetchall()}
+
+        # If seller was harvested via HTML profile without candidate lots, fallback to lot_snapshots
+        if not lot_counts:
+            cursor.execute(
+                """
+                SELECT COALESCE(ls.native_section_name, 'Unknown') as cat_name, COUNT(DISTINCT ls.lot_id) as lot_c
+                FROM lot_snapshots ls
+                WHERE ls.seller_id = ?
+                  AND ls.raw_snapshot_id = (
+                      SELECT raw_snapshot_id FROM lot_snapshots WHERE seller_id = ? ORDER BY raw_snapshot_id DESC LIMIT 1
+                  )
+                GROUP BY ls.native_section_name
+                """,
+                (seller_id, seller_id),
+            )
+            lot_counts = {row[0]: int(row[1]) for row in cursor.fetchall()}
 
         all_cat_names = set(cat_stats.keys()) | set(lot_counts.keys())
         categories: list[CategorySummary] = []

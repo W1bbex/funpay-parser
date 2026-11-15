@@ -3,7 +3,7 @@ import json
 import os
 from io import StringIO
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup
@@ -164,6 +164,7 @@ def test_market_analytics_sums_nullable_review_prices(tmp_path, monkeypatch):
 # 8. db get_connection when DB_PATH has no directory component
 def test_db_dirname_empty_safety(tmp_path, monkeypatch):
     test_db = tmp_path / "test_local.sqlite3"
+    monkeypatch.delenv("FUNPAY_DB_PATH", raising=False)
     monkeypatch.setattr(db_mod, "DB_PATH", str(test_db.name))
     monkeypatch.chdir(tmp_path)
 
@@ -712,12 +713,14 @@ def test_profile_harvester_data_s_prefers_tc_price_over_tc_amount(tmp_path, monk
         assert row[0] == "0.5"
 
 
-def test_markup_escape_prevents_rich_errors():
-    from rich.markup import escape
-    from rich.console import Console
+def test_markup_escape_prevents_rich_errors(tmp_path, monkeypatch):
+    import show_seller
     from io import StringIO
+    from rich.console import Console
 
     test_console = Console(file=StringIO(), force_terminal=False)
+    monkeypatch.setattr(show_seller, "console", test_console)
+
     untrusted_strings = [
         "[/bold]",
         "[bold red]error[/bold red]",
@@ -726,10 +729,14 @@ def test_markup_escape_prevents_rich_errors():
         "{'key': [1, 2, 3]}",
     ]
 
-    for s in untrusted_strings:
-        escaped = escape(s)
-        # Must not raise MarkupError
-        test_console.print(f"[bold #FFFFFF]{escaped}[/bold #FFFFFF]")
+    for idx, s in enumerate(untrusted_strings, 1):
+        report_file = tmp_path / f"seller_{idx}.json"
+        report_file.write_text(
+            json.dumps({"username": s, "total_reviews": 1, "categories": {}, "source": "json"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sys.argv", ["show_seller.py", str(report_file)])
+        show_seller.main()
 
 
 def test_mark_proxy_atomic_write_failure_preserves_state(tmp_path, monkeypatch):
@@ -1018,6 +1025,390 @@ def test_match_and_filter_lots_special_chars_category_does_not_match_all():
     filtered = match_and_filter_lots(lots, categories_reviews)
     assert "***" in filtered
     assert len(filtered["***"]["candidate_lots"]) == 0
+
+
+def test_core_package_exports_and_imports():
+    from funpay_analytics.core import (
+        IMPERSONATES,
+        atomic_write_json,
+        atomic_write_lines,
+        extract_user_id,
+        get_browser_for_proxy,
+        hide_proxy_credentials,
+        is_running_under_pytest,
+        load_proxies,
+        logger,
+        normalize_proxy,
+        parse_price,
+        setup_file_logging,
+    )
+
+    assert len(IMPERSONATES) > 0
+    assert callable(get_browser_for_proxy)
+    assert callable(hide_proxy_credentials)
+    assert logger is not None
+    assert callable(normalize_proxy)
+    assert callable(setup_file_logging)
+    assert callable(parse_price)
+    assert callable(load_proxies)
+    assert callable(atomic_write_json)
+    assert callable(atomic_write_lines)
+    assert is_running_under_pytest() is True
+    assert extract_user_id("seller_12345.json") == "12345"
+
+
+def test_load_proxies_deduplicates_raw_and_normalized(tmp_path):
+    p_file = tmp_path / "proxies.txt"
+    p_file.write_text("1.2.3.4:8080:user:pass\n", encoding="utf-8")
+    g_file = tmp_path / "good_proxies.txt"
+    g_file.write_text("socks5://user:pass@1.2.3.4:8080\n", encoding="utf-8")
+
+    proxies = load_proxies(base_dir=str(tmp_path))
+    assert len(proxies) == 1
+    assert proxies[0] == "socks5://user:pass@1.2.3.4:8080"
+
+
+def test_logging_setup_file_logging_skips_under_pytest(tmp_path):
+    from funpay_analytics.core.logging import setup_file_logging
+
+    log_dir = tmp_path / "test_logs"
+    setup_file_logging(log_dir)
+    assert not (log_dir / "parser.log").exists()
+
+
+def test_price_minor_and_parse_price_units_and_formats():
+    from funpay_analytics.core import parse_price, to_price_minor
+
+    # Units with slash
+    assert to_price_minor("10 руб. / 1 шт.") == 1000
+    assert parse_price("10 руб. / 1 шт.") == 10.0
+
+    # Multiple dots (European format)
+    assert to_price_minor("1.500.50") == 150050
+    assert parse_price("1.500.50") == 1500.50
+
+    # Boolean protection
+    with pytest.raises(ValueError, match="boolean"):
+        to_price_minor(True)
+    with pytest.raises(ValueError, match="boolean"):
+        to_price_minor(False)
+    assert parse_price(True) == 0.0
+    assert parse_price(False) == 0.0
+
+    # Normal prices
+    assert to_price_minor("250.00 ₽") == 25000
+    assert parse_price("250.00 ₽") == 250.0
+
+
+def test_seller_summary_from_db_deduplicates_multiple_historical_snapshots():
+    from funpay_analytics.models import SellerSummary
+    from funpay_analytics.storage.db import get_db, init_db
+
+    init_db()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO sellers (id, name, rating, reviews_count) VALUES (901, 'MultiSnap', 5.0, 2)")
+
+        # Snapshot 1
+        cursor.execute(
+            "INSERT INTO raw_snapshots (id, source_type, seller_id, external_id, content_sha256) VALUES (91, 'seller_snapshot_v2', 901, '901', 'sha_snap_91')"
+        )
+        cursor.execute(
+            "INSERT INTO reviews (raw_snapshot_id, review_index, seller_id, category_text, price_minor, rating) VALUES (91, 0, 901, 'Keys', 10000, 5)"
+        )
+
+        # Snapshot 2 (updated reviews for the same seller)
+        cursor.execute(
+            "INSERT INTO raw_snapshots (id, source_type, seller_id, external_id, content_sha256) VALUES (92, 'seller_snapshot_v2', 901, '901', 'sha_snap_92')"
+        )
+        cursor.execute(
+            "INSERT INTO reviews (raw_snapshot_id, review_index, seller_id, category_text, price_minor, rating) VALUES (92, 0, 901, 'Keys', 15000, 5)"
+        )
+        cursor.execute(
+            "INSERT INTO reviews (raw_snapshot_id, review_index, seller_id, category_text, price_minor, rating) VALUES (92, 1, 901, 'Keys', 25000, 5)"
+        )
+        conn.commit()
+
+        summary = SellerSummary.from_db(conn, 901)
+        assert summary is not None
+        assert len(summary.categories) == 1
+        # Only snapshot 92 should be counted: 150 + 250 = 400.0 RUB (2 reviews), NOT 100 + 150 + 250 = 500.0 RUB (3 reviews)
+        assert summary.categories[0].review_count == 2
+        assert summary.categories[0].total_rub == 400.0
+
+
+def test_seller_summary_from_db_html_profile_fallback_for_lots():
+    from funpay_analytics.models import SellerSummary
+    from funpay_analytics.storage.db import get_db, init_db
+
+    init_db()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO sellers (id, name, rating, reviews_count) VALUES (902, 'HtmlSeller', 4.8, 0)")
+        cursor.execute(
+            "INSERT INTO raw_snapshots (id, source_type, seller_id, external_id, content_sha256) VALUES (93, 'profile', 902, '902', 'sha_snap_93')"
+        )
+        cursor.execute("INSERT INTO lots (id, seller_id, category_id) VALUES (5001, 902, '10')")
+        cursor.execute("INSERT INTO lots (id, seller_id, category_id) VALUES (5002, 902, '10')")
+        cursor.execute(
+            """
+            INSERT INTO lot_snapshots (lot_id, seller_id, native_section_name, title_raw, visible_price_minor, raw_snapshot_id)
+            VALUES (5001, 902, 'Steam Gifts', 'Gift 1', 5000, 93)
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO lot_snapshots (lot_id, seller_id, native_section_name, title_raw, visible_price_minor, raw_snapshot_id)
+            VALUES (5002, 902, 'Steam Gifts', 'Gift 2', 8000, 93)
+            """
+        )
+        conn.commit()
+
+        summary = SellerSummary.from_db(conn, 902)
+        assert summary is not None
+        assert len(summary.categories) == 1
+        assert summary.categories[0].name == "Steam Gifts"
+        assert summary.categories[0].lot_count == 2
+
+
+def test_seller_summary_from_dict_preserves_rating():
+    from funpay_analytics.models import SellerSummary
+
+    data = {
+        "seller_id": "4444",
+        "username": "RatedSeller",
+        "rating": 4.85,
+        "categories": {},
+    }
+    summary = SellerSummary.from_dict(data)
+    assert summary.rating == 4.85
+
+
+def test_profile_harvester_conflict_owner_raises_error(tmp_path, monkeypatch):
+    from unittest.mock import patch
+    from funpay_analytics.storage.db import get_db, init_db
+    from funpay_analytics.harvest.profile_harvester import import_profile_from_file
+
+    init_db()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO sellers (id, name) VALUES (111, 'Owner1')")
+        cursor.execute("INSERT INTO sellers (id, name) VALUES (222, 'Owner2')")
+        cursor.execute("INSERT INTO lots (id, seller_id, is_active) VALUES (77777, 111, 1)")
+        conn.commit()
+
+    html_file = tmp_path / "profile_conflict.html"
+    html_file.write_text("<html><body><div class='offer-list-title'><a>Games</a></div></body></html>", encoding="utf-8")
+
+    from types import SimpleNamespace
+    mock_offer = SimpleNamespace(
+        id="77777",
+        title="Conflict Item",
+        price=SimpleNamespace(value=100),
+        raw_source=None,
+        auto_delivery=False,
+    )
+    mock_parsed = SimpleNamespace(
+        user_id=222,  # Different seller attempting to claim lot 77777
+        username="Owner2",
+        status_text="Online",
+        registration_date_text="Today",
+        rating=None,
+        offers={"game": {1: [mock_offer]}},
+    )
+
+    with patch("funpay_analytics.harvest.profile_harvester.ProfilePageParser") as mock_parser_cls:
+        mock_parser_instance = mock_parser_cls.return_value
+        mock_parser_instance.parse.return_value = mock_parsed
+
+        with pytest.raises(ValueError, match="Конфликт владельца: лот 77777 уже принадлежит продавцу 111"):
+            import_profile_from_file(str(html_file))
+
+
+def test_raw_lake_save_snapshot_string_content_signature_a():
+    from funpay_analytics.storage.raw_lake import save_raw_snapshot
+
+    sha256, path_rel = save_raw_snapshot("seller_snapshot_v2", "888", '{"status": "ok", "items": [1, 2, 3]}', "json")
+    assert len(sha256) == 64
+    assert path_rel.endswith(".json.gz")
+
+
+def test_raw_lake_path_traversal_sanitization():
+    from funpay_analytics.storage.raw_lake import save_raw_snapshot
+
+    sha256, path_rel = save_raw_snapshot("../../evil_dir", b"clean payload", "../../bad.ext")
+    assert len(sha256) == 64
+    assert "evil_dir" in path_rel
+    assert ".." not in path_rel
+    assert path_rel.endswith(".badext.gz")
+
+
+def test_fetch_ids_mark_proxy_cleans_good_rmthub_file(tmp_path):
+    from fetch_ids import mark_proxy
+
+    good_file = tmp_path / "good_rmthub.txt"
+    bad_file = tmp_path / "bad_rmthub.txt"
+    good_file.write_text("http://p1:8080\nhttp://p2:8080\n", encoding="utf-8")
+
+    good_proxies = {"http://p1:8080", "http://p2:8080"}
+    bad_proxies = set()
+    pool = ["http://p1:8080", "http://p2:8080"]
+
+    mark_proxy("http://p1:8080", "bad", str(tmp_path), good_proxies, bad_proxies, pool, permanent=True)
+
+    assert "http://p1:8080" not in good_proxies
+    assert "http://p1:8080" in bad_proxies
+    assert "http://p1:8080" not in good_file.read_text(encoding="utf-8")
+    assert "http://p1:8080" in bad_file.read_text(encoding="utf-8")
+
+
+def test_fetch_ids_reset_queue_ignores_existing_queue_file(tmp_path):
+    import fetch_ids
+
+    q_file = tmp_path / "queue.txt"
+    q_file.write_text("999999:10\n", encoding="utf-8")
+
+    async def _test():
+        with patch("fetch_ids.load_proxies", return_value=[]):
+            with patch("fetch_ids.fetch_page", new=AsyncMock(return_value=[("12345", 50)])):
+                await fetch_ids.main(target_count=20, reset_queue=True)
+
+    with patch("fetch_ids.os.path.dirname", return_value=str(tmp_path)):
+        asyncio.run(_test())
+
+    content = q_file.read_text(encoding="utf-8")
+    assert "12345:50" in content
+    assert "999999" not in content
+
+
+def test_runner_parse_worker_guarantees_cleanup_on_cancel():
+    from funpay_analytics.engine.runner import parse_worker
+
+    queue = asyncio.Queue()
+    queue.put_nowait("111")
+    active_workers = [0]
+
+    async def cancelled_parser(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_session_cls = MagicMock(return_value=mock_session)
+
+    async def _run():
+        task = asyncio.create_task(
+            parse_worker(
+                1,
+                "Direct",
+                None,
+                queue,
+                [],
+                {},
+                {},
+                active_workers=active_workers,
+                profile_parser=cancelled_parser,
+                session_cls=mock_session_cls,
+            )
+        )
+        await asyncio.sleep(0.01)
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+    assert active_workers[0] == 0
+
+
+def test_runner_mass_parse_propagates_base_dir_to_worker(tmp_path):
+    from funpay_analytics.engine.runner import mass_parse
+
+    q_file = tmp_path / "queue.txt"
+    q_file.write_text("222:1\n", encoding="utf-8")
+
+    passed_base_dirs = []
+
+    async def mock_worker(*args, **kwargs):
+        passed_base_dirs.append(args[9] if len(args) > 9 else kwargs.get("base_dir"))
+        queue = args[3]
+        queue.get_nowait()
+        queue.task_done()
+
+    async def _run():
+        await mass_parse(
+            {},
+            {},
+            base_dir=str(tmp_path),
+            worker_fn=mock_worker,
+            ranker=AsyncMock(return_value=[{"name": "Local", "url": None}]),
+            proxy_loader=lambda: [],
+        )
+
+    asyncio.run(_run())
+    assert len(passed_base_dirs) == 1
+    assert passed_base_dirs[0] == str(tmp_path)
+
+
+def test_client_parse_profile_retries_on_transient_network_error():
+    from funpay_analytics.scraper.client import parse_profile
+
+    mock_client = AsyncMock()
+    call_count = [0]
+
+    async def mock_get(url, *args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise Exception("curl: (28) Connection timeout")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "<html><span class='mr4'>TestUser</span></html>"
+        return resp
+
+    mock_client.get = mock_get
+
+    async def _run():
+        mock_p = MagicMock()
+        mock_p.return_value.parse.return_value = MagicMock(user_id=123)
+        with patch("funpay_analytics.scraper.client.asyncio.sleep", new=AsyncMock()):
+            with patch("funpay_analytics.scraper.client.extract_profile_lots", return_value=[]):
+                with patch("funpay_analytics.scraper.client.fetch_seller_reviews", return_value=({}, 0)):
+                    return await parse_profile(mock_client, "123", reviews_parser_cls=mock_p)
+
+    res = asyncio.run(_run())
+    assert res is not None
+    assert res["username"] == "TestUser"
+    assert call_count[0] == 2
+
+
+def test_client_sec_ch_ua_platform_matches_user_agent():
+    from funpay_analytics.scraper.client import parse_profile
+
+    captured_headers = []
+    mock_client = AsyncMock()
+
+    async def mock_get(url, *args, **kwargs):
+        captured_headers.append(kwargs.get("headers", {}))
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "<html><span class='mr4'>MacUser</span></html>"
+        return resp
+
+    mock_client.get = mock_get
+
+    async def _run():
+        mac_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        mock_p = MagicMock()
+        mock_p.return_value.parse.return_value = MagicMock(user_id=123)
+        with patch("funpay_analytics.scraper.client.extract_profile_lots", return_value=[]):
+            with patch("funpay_analytics.scraper.client.fetch_seller_reviews", return_value=({}, 0)):
+                await parse_profile(mock_client, "123", user_agent=mac_ua, reviews_parser_cls=mock_p)
+
+    asyncio.run(_run())
+    assert len(captured_headers) == 1
+    assert captured_headers[0]["Sec-Ch-Ua-Platform"] == '"macOS"'
+
+
+
 
 
 

@@ -119,6 +119,11 @@ def import_profile_from_file(file_path):
                                 if data_s_decimal is None and data_s_match:
                                     data_s_decimal = data_s_match.group(1)
 
+                        cursor.execute("SELECT seller_id FROM lots WHERE id=?", (lot_id,))
+                        existing_lot = cursor.fetchone()
+                        if existing_lot and existing_lot[0] is not None and str(existing_lot[0]) != str(seller_id):
+                            raise ValueError(f"Конфликт владельца: лот {lot_id} уже принадлежит продавцу {existing_lot[0]}")
+
                         cursor.execute('''
                             INSERT INTO lots (id, seller_id, category_id, is_active)
                             VALUES (?, ?, ?, 1)

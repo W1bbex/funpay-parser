@@ -7,7 +7,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
-from utils import logger, parse_price
+
+from funpay_analytics.core import logger, parse_price
 
 
 def get_review_interval(price: float) -> tuple[Decimal, Decimal] | None:

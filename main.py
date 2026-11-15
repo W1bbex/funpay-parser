@@ -53,6 +53,12 @@ console = Console(
     legacy_windows=False
 )
 
+
+async def async_input(prompt_text: str = "") -> str:
+    """Non-blocking input wrapper for asyncio event loop."""
+    return await asyncio.to_thread(input, prompt_text)
+
+
 def show_banner():
     print("\033[2J\033[H", end="", flush=True)
     f_u = [
@@ -101,7 +107,7 @@ def show_banner():
         f"{indent}[bold {FP_BLUE}]{arr[9]}[/bold {FP_BLUE}]",
         f"{indent}[bold {FP_BLUE}]{arr[10]}[/bold {FP_BLUE}]",
         f"{indent}[bold {FP_BLUE}]{arr[11]}[/bold {FP_BLUE}]",
-        f"    [bold {FP_WHITE}]ANALYTICS & FULL MARKET SCRAPER PIPELINE[/bold {FP_WHITE}] [{FP_BLUE}](v1.0.0)[/{FP_BLUE}]"
+        f"    [bold {FP_WHITE}]ANALYTICS & FULL MARKET SCRAPER PIPELINE[/bold {FP_WHITE}] [{FP_BLUE}](v0.2.0)[/{FP_BLUE}]"
     ])
     banner_text = "\n".join(lines)
     console.print(Panel(banner_text, border_style=FP_BLUE, expand=False))
@@ -207,7 +213,11 @@ async def run_full_pipeline():
 
         if has_queue:
             console.print(f"[{FP_BLUE}]Найдена готовая очередь:[/{FP_BLUE}] [bold {FP_WHITE}]{q_count}[/bold {FP_WHITE}] [{FP_BLUE}]продавцов в queue.txt[/{FP_BLUE}]")
-            refetch = not Confirm.ask(f"[{FP_WHITE}]Использовать текущую очередь продавцов?[/{FP_WHITE}]", default=True)
+            use_existing = Confirm.ask(f"[{FP_WHITE}]Использовать текущую очередь продавцов?[/{FP_WHITE}]", default=True)
+            refetch = not use_existing
+            reset_queue = not use_existing
+        else:
+            reset_queue = False
 
         if refetch:
             failed_file = BASE_DIR / "failed_pages.txt"
@@ -229,7 +239,7 @@ async def run_full_pipeline():
 
                 pages = max(1, (target_count + 19) // 20)
                 console.print(f"[{FP_BLUE}]Стягиваем {pages} страниц с rmthub.com...[/{FP_BLUE}]")
-                await fetch_ids.main(target_count=target_count)
+                await fetch_ids.main(target_count=target_count, reset_queue=reset_queue)
 
         console.print(f"\n[bold {FP_BLUE}]2. Запуск массового параллельного парсера FunPay...[/bold {FP_BLUE}]")
         from parser import main_async as run_mass_parser_async
@@ -238,7 +248,7 @@ async def run_full_pipeline():
             console.print("\n[bold red][!] Внимание: Парсинг завершился с ошибками: не все задачи в очереди были обработаны![/bold red]")
         else:
             console.print(f"\n[bold {FP_BLUE}]✅ Массовый парсинг завершен! Отчет обновлен в market_report_v2.json[/bold {FP_BLUE}]")
-        input("\nНажмите Enter для просмотра аналитики...")
+        await async_input("\nНажмите Enter для просмотра аналитики...")
         show_market_analytics()
     except (KeyboardInterrupt, asyncio.CancelledError):
         console.print(f"\n[bold {FP_BLUE}][!] Сбор рынка прерван пользователем.[/bold {FP_BLUE}]")
@@ -258,7 +268,7 @@ async def run_single_seller_parse():
             console.print(f"\n[bold {FP_WHITE}]❌ '{safe_input}' — это текстовый никнейм, а не ID![/bold {FP_WHITE}]")
             console.print(f"[{FP_BLUE}]На FunPay профили адресуются только по числовому ID пользователя или ссылке.[/{FP_BLUE}]")
             console.print(f"[{FP_BLUE}]Пример: 14273448 или https://funpay.com/users/14273448/[/{FP_BLUE}]")
-            input("\nНажмите Enter для возврата в меню...")
+            await async_input("\nНажмите Enter для возврата в меню...")
             return
 
         limit_raw = Prompt.ask(
@@ -306,7 +316,7 @@ async def run_single_seller_parse():
 
         if not res:
             console.print(f"[bold {FP_WHITE}]❌ Не удалось спарсить пользователя {user_id}. Проверьте доступность профиля.[/bold {FP_WHITE}]")
-            input("\nНажмите Enter...")
+            await async_input("\nНажмите Enter...")
             return
 
         username = res.get("username", "Неизвестно")
@@ -350,7 +360,7 @@ async def run_single_seller_parse():
             console.print(f"[{FP_BLUE}]Отчет сохранен в {out_file}[/{FP_BLUE}]")
         else:
             console.print(f"[bold red]❌ Не удалось сохранить отчет в {out_file}[/bold red]")
-        input("\nНажмите Enter для возврата в меню...")
+        await async_input("\nНажмите Enter для возврата в меню...")
     except (KeyboardInterrupt, asyncio.CancelledError):
         console.print(f"\n[bold {FP_BLUE}][!] Парсинг продавца прерван пользователем.[/bold {FP_BLUE}]")
         raise
@@ -389,7 +399,7 @@ async def run_proxy_manager():
             console.print(f"[bold {FP_BLUE}]Блокнот открыт! Сохраните файл после добавления прокси.[/bold {FP_BLUE}]")
         else:
             console.print(f"[{FP_WHITE}]Откройте файл: {proxy_file}[/{FP_WHITE}]")
-        input("\nНажмите Enter после сохранения...")
+        await async_input("\nНажмите Enter после сохранения...")
     elif choice == "1":
         try:
             with Progress(SpinnerColumn(style=FP_BLUE), TextColumn(f"[bold {FP_WHITE}]Калибровка и проверка задержки прокси..."), transient=True) as progress:
@@ -422,7 +432,7 @@ async def run_proxy_manager():
             table.add_row(str(i), v['name'], ping_str)
 
         console.print(table)
-        input("\nНажмите Enter для возврата в меню...")
+        await async_input("\nНажмите Enter для возврата в меню...")
 
 def main_menu():
     while True:

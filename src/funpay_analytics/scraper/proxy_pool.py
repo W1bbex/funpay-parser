@@ -5,8 +5,8 @@ import time
 from typing import Any
 
 from curl_cffi import requests
-from utils import get_browser_for_proxy, hide_proxy_credentials, logger
 
+from funpay_analytics.core import get_browser_for_proxy, hide_proxy_credentials, logger
 from funpay_analytics.scraper.client import FUNPAY_COOKIES
 
 

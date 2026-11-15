@@ -13,7 +13,7 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 
-"%~dp0.venv\Scripts\python.exe" -c "import curl_cffi, rich, loguru" >nul 2>&1
+"%~dp0.venv\Scripts\python.exe" -c "import curl_cffi, rich, loguru, bs4, dotenv, funpayparsers" >nul 2>&1
 if errorlevel 1 (
     echo [FunPay Analytics] Installing dependencies from requirements.txt...
     call "%~dp0.venv\Scripts\python.exe" -m pip install --upgrade pip -q

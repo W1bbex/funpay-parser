@@ -1,45 +1,12 @@
 import json
-import re
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+
+from funpay_analytics.core import to_price_minor
 from funpay_analytics.models import CandidateLotDict
 from funpay_analytics.storage.db import get_db
 from funpay_analytics.storage.raw_lake import save_raw_snapshot
 
-def _to_price_minor(price_val) -> int:
-    """Безопасно переводит цену (число или строку с валютой) в минорные единицы (копейки)."""
-    if price_val is None:
-        raise ValueError("Цена не может быть None")
-    if isinstance(price_val, (int, float)):
-        val = Decimal(str(price_val))
-        return int((val * Decimal('100')).to_integral_value())
-    s = str(price_val).replace('\xa0', ' ').strip()
-    # Отсекаем текстовые обозначения валют и единиц с возможной точкой (руб., коп., usd.)
-    s = re.sub(r'[a-zA-Zа-яА-ЯёЁ]+\.?\s*', '', s).strip()
-    s_cleaned = re.sub(r'[^\d.,]', '', s).strip('.,')
-    if not s_cleaned:
-        raise ValueError(f"Некорректная цена: {price_val}")
-    if ',' in s_cleaned and '.' in s_cleaned:
-        if s_cleaned.rfind('.') > s_cleaned.rfind(','):
-            s_cleaned = s_cleaned.replace(',', '')
-        else:
-            s_cleaned = s_cleaned.replace('.', '').replace(',', '.')
-    elif ',' in s_cleaned:
-        if re.search(r"^\d{1,3}(?:,\d{3})+$", s_cleaned):
-            s_cleaned = s_cleaned.replace(',', '')
-        else:
-            s_cleaned = s_cleaned.replace(',', '.')
-    elif '.' in s_cleaned:
-        if s_cleaned.count('.') > 1:
-            s_cleaned = s_cleaned.replace('.', '')
-    match = re.search(r'([\d.]+)', s_cleaned)
-    if not match:
-        raise ValueError(f"Некорректная цена: {price_val}")
-    try:
-        val = Decimal(match.group(1))
-        return int((val * Decimal('100')).to_integral_value())
-    except (InvalidOperation, TypeError, ValueError) as e:
-        raise ValueError(f"Невозможно преобразовать цену {price_val} в Decimal: {e}") from e
+_to_price_minor = to_price_minor
 
 
 def import_seller_json(file_path):

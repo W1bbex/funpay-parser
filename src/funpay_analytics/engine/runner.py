@@ -4,12 +4,13 @@ import asyncio
 import json
 import os
 import random
-import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from curl_cffi import requests
-from utils import (
+
+from funpay_analytics.core import (
     atomic_write_json,
     atomic_write_lines,
     get_browser_for_proxy,
@@ -17,7 +18,6 @@ from utils import (
     load_proxies,
     logger,
 )
-
 from funpay_analytics.scraper.client import (
     FUNPAY_COOKIES,
     parse_profile as default_parse_profile,
@@ -25,77 +25,10 @@ from funpay_analytics.scraper.client import (
 from funpay_analytics.scraper.proxy_pool import ping_and_rank as default_ping_and_rank
 
 
-def _resolve_base_dir(base_dir: str | None = None) -> str:
+def _resolve_base_dir(base_dir: str | Path | None = None) -> str:
     if base_dir:
-        return base_dir
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "BASE_DIR"):
-        return str(parser_mod.BASE_DIR)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def _get_parse_profile():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "parse_profile"):
-        return parser_mod.parse_profile
-    return default_parse_profile
-
-
-def _get_async_session():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "requests"):
-        return parser_mod.requests.AsyncSession
-    return requests.AsyncSession
-
-
-def _get_load_proxies():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "load_proxies"):
-        return parser_mod.load_proxies
-    return load_proxies
-
-
-def _get_ping_and_rank():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "ping_and_rank"):
-        return parser_mod.ping_and_rank
-    return default_ping_and_rank
-
-
-def _get_parse_worker():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "parse_worker"):
-        return parser_mod.parse_worker
-    return parse_worker
-
-
-def _get_atomic_write_json():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "atomic_write_json"):
-        return parser_mod.atomic_write_json
-    return atomic_write_json
-
-
-def _get_random():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "random"):
-        return parser_mod.random
-    return random
-
-
-def _get_mass_parse():
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "mass_parse"):
-        return parser_mod.mass_parse
-    return mass_parse
-
-
-async def _async_sleep(seconds: float) -> None:
-    parser_mod = sys.modules.get("parser")
-    if parser_mod and hasattr(parser_mod, "asyncio"):
-        await parser_mod.asyncio.sleep(seconds)
-    else:
-        await asyncio.sleep(seconds)
+        return str(base_dir)
+    return str(Path(__file__).resolve().parents[3])
 
 
 async def parse_worker(
@@ -109,6 +42,10 @@ async def parse_worker(
     retry_map: dict[str, int] | None = None,
     active_workers: list[int] | None = None,
     base_dir: str | None = None,
+    profile_parser: Any = None,
+    session_cls: Any = None,
+    atomic_writer: Any = None,
+    sleep_fn: Any = None,
 ) -> None:
     """Async worker processing sellers from the queue with retry tracking and atomic storage."""
     effective_base_dir = _resolve_base_dir(base_dir)
@@ -116,6 +53,15 @@ async def parse_worker(
         retry_map = {}
     if active_workers is None:
         active_workers = [0]
+    if profile_parser is None:
+        profile_parser = default_parse_profile
+    if session_cls is None:
+        session_cls = requests.AsyncSession
+    if atomic_writer is None:
+        atomic_writer = atomic_write_json
+    if sleep_fn is None:
+        sleep_fn = asyncio.sleep
+
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -125,9 +71,6 @@ async def parse_worker(
     proxies: Any = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     consecutive_errors = 0
     browser: Any = get_browser_for_proxy(proxy_url) if proxy_url else "chrome120"
-
-    session_cls = _get_async_session()
-    profile_parser = _get_parse_profile()
 
     async with session_cls(proxies=proxies, impersonate=browser, timeout=25.0, cookies=FUNPAY_COOKIES) as client:
         while True:
@@ -147,59 +90,59 @@ async def parse_worker(
             logger.debug(f"[Воркер {worker_id} | IP: {ip_name}] Взял в работу продавца {user_id}")
             start_time = time.time()
             try:
-                res = await profile_parser(client, user_id, proxy=proxy_url, user_agent=ua)
-            except Exception as e:
-                logger.error(f"[Воркер {worker_id} | IP: {ip_name}] Неожиданная ошибка при парсинге {user_id}: {e}")
-                res = None
-            elapsed = time.time() - start_time
+                try:
+                    res = await profile_parser(client, user_id, proxy=proxy_url, user_agent=ua)
+                except Exception as e:
+                    logger.error(f"[Воркер {worker_id} | IP: {ip_name}] Неожиданная ошибка при парсинге {user_id}: {e}")
+                    res = None
+                elapsed = time.time() - start_time
 
-            written = False
-            if res:
-                reviews = res.get("total_reviews", 0)
-                rps = reviews / elapsed if elapsed > 0 else 0
-                logger.info(f"[ID {user_id}] ⚡ Скорость: {rps:.1f} о/с (Всего: {elapsed:.1f} с)")
+                written = False
+                if res:
+                    reviews = res.get("total_reviews", 0)
+                    rps = reviews / elapsed if elapsed > 0 else 0
+                    logger.info(f"[ID {user_id}] ⚡ Скорость: {rps:.1f} о/с (Всего: {elapsed:.1f} с)")
 
-                reports_dir = os.path.join(effective_base_dir, "reports_v2")
-                await asyncio.to_thread(os.makedirs, reports_dir, exist_ok=True)
-                report_path = os.path.join(reports_dir, f"seller_{user_id}.json")
-                writer = _get_atomic_write_json()
-                written = bool(await asyncio.to_thread(writer, report_path, res))
-                if written:
-                    library[user_id] = {
-                        "status": "completed",
-                        "reviews": reviews,
-                    }
-                    consecutive_errors = 0
-                    stats["parsed_count"] = stats.get("parsed_count", 0) + 1
-                    stats["total_reviews"] = stats.get("total_reviews", 0) + reviews
-                    p_url = proxy_url if proxy_url else "Локальный IP"
-                    proxy_success = stats.setdefault("proxy_success", {})
-                    proxy_success[p_url] = proxy_success.get(p_url, 0) + 1
-                else:
-                    logger.error(
-                        f"[Воркер {worker_id} | IP: {ip_name}] Ошибка записи файла отчета reports_v2/seller_{user_id}.json"
-                    )
+                    reports_dir = os.path.join(effective_base_dir, "reports_v2")
+                    await asyncio.to_thread(os.makedirs, reports_dir, exist_ok=True)
+                    report_path = os.path.join(reports_dir, f"seller_{user_id}.json")
+                    written = bool(await asyncio.to_thread(atomic_writer, report_path, res))
+                    if written:
+                        library[user_id] = {
+                            "status": "completed",
+                            "reviews": reviews,
+                        }
+                        consecutive_errors = 0
+                        stats["parsed_count"] = stats.get("parsed_count", 0) + 1
+                        stats["total_reviews"] = stats.get("total_reviews", 0) + reviews
+                        p_url = proxy_url if proxy_url else "Локальный IP"
+                        proxy_success = stats.setdefault("proxy_success", {})
+                        proxy_success[p_url] = proxy_success.get(p_url, 0) + 1
+                    else:
+                        logger.error(
+                            f"[Воркер {worker_id} | IP: {ip_name}] Ошибка записи файла отчета reports_v2/seller_{user_id}.json"
+                        )
 
-            if not res or not written:
-                consecutive_errors += 1
-                retries = retry_map.get(user_id, 0) + 1
-                retry_map[user_id] = retries
-                if retries < 3:
-                    logger.warning(
-                        f"[Воркер {worker_id} | IP: {ip_name}] Ошибка (попытка {retries}/3). "
-                        f"Возвращаем продавца {user_id} в очередь."
-                    )
-                    queue.put_nowait(user_id)
-                else:
-                    logger.error(
-                        f"[Воркер {worker_id} | IP: {ip_name}] Продавец {user_id} превысил лимит попыток ({retries}). Пропускаем."
-                    )
-                    library[user_id] = {"status": "failed", "error": "max_retries_exceeded"}
-                    stats["failed_count"] = stats.get("failed_count", 0) + 1
-                stats["errors"] = stats.get("errors", 0) + 1
-
-            active_workers[0] -= 1
-            queue.task_done()
+                if not res or not written:
+                    consecutive_errors += 1
+                    retries = retry_map.get(user_id, 0) + 1
+                    retry_map[user_id] = retries
+                    if retries < 3:
+                        logger.warning(
+                            f"[Воркер {worker_id} | IP: {ip_name}] Ошибка (попытка {retries}/3). "
+                            f"Возвращаем продавца {user_id} в очередь."
+                        )
+                        queue.put_nowait(user_id)
+                    else:
+                        logger.error(
+                            f"[Воркер {worker_id} | IP: {ip_name}] Продавец {user_id} превысил лимит попыток ({retries}). Пропускаем."
+                        )
+                        library[user_id] = {"status": "failed", "error": "max_retries_exceeded"}
+                        stats["failed_count"] = stats.get("failed_count", 0) + 1
+                    stats["errors"] = stats.get("errors", 0) + 1
+            finally:
+                active_workers[0] -= 1
+                queue.task_done()
 
             if consecutive_errors >= 3:
                 masked_proxy = hide_proxy_credentials(proxy_url) if proxy_url else "Direct"
@@ -210,14 +153,15 @@ async def parse_worker(
                 break
 
             if not queue.empty():
-                rnd = _get_random()
                 if proxy_url:
-                    await _async_sleep(rnd.uniform(1.0, 2.0))
+                    await sleep_fn(random.uniform(1.0, 2.0))
                 else:
-                    await _async_sleep(rnd.uniform(3.0, 5.0))
+                    await sleep_fn(random.uniform(3.0, 5.0))
 
 
-async def background_library_saver(library: dict[str, Any], lock: asyncio.Lock | None = None, base_dir: str | None = None) -> None:
+async def background_library_saver(
+    library: dict[str, Any], lock: asyncio.Lock | None = None, base_dir: str | None = None
+) -> None:
     """Background task periodically saving library_v2.json to disk."""
     effective_base_dir = _resolve_base_dir(base_dir)
     target_path = os.path.join(effective_base_dir, "library_v2.json")
@@ -235,13 +179,27 @@ async def background_library_saver(library: dict[str, Any], lock: asyncio.Lock |
             logger.warning("Фоновое сохранение library_v2.json не удалось.")
 
 
-async def mass_parse(library: dict[str, Any], stats: dict[str, Any], base_dir: str | None = None) -> list[Any] | None:
+async def mass_parse(
+    library: dict[str, Any],
+    stats: dict[str, Any],
+    base_dir: str | None = None,
+    worker_fn: Any = None,
+    ranker: Any = None,
+    proxy_loader: Any = None,
+) -> list[Any] | None:
     """Orchestrates pool of async workers to drain queue.txt."""
     effective_base_dir = _resolve_base_dir(base_dir)
     queue_path = os.path.join(effective_base_dir, "queue.txt")
     if not os.path.exists(queue_path):
         logger.error("Файл queue.txt не найден! Сначала запустите fetch_ids.py")
         return None
+
+    if worker_fn is None:
+        worker_fn = parse_worker
+    if ranker is None:
+        ranker = default_ping_and_rank
+    if proxy_loader is None:
+        proxy_loader = load_proxies
 
     all_sellers_dict: dict[str, int] = {}
     with open(queue_path, encoding="utf-8") as f:
@@ -273,10 +231,8 @@ async def mass_parse(library: dict[str, Any], stats: dict[str, Any], base_dir: s
         logger.info(f"  ID {s['uid']} - {s['count']} отзывов")
 
     results: list[Any] = []
-    proxy_loader = _get_load_proxies()
     proxy_list = proxy_loader()
 
-    ranker = _get_ping_and_rank()
     available_ips = await ranker(proxy_list)
 
     logger.info("[Этап 2] Умное распределение задач...")
@@ -290,7 +246,6 @@ async def mass_parse(library: dict[str, Any], stats: dict[str, Any], base_dir: s
     retry_map: dict[str, int] = {}
     active_workers = [0]
     workers = []
-    worker_fn = _get_parse_worker()
 
     for i, ip_info in enumerate(available_ips):
         if queue.empty():
@@ -307,6 +262,7 @@ async def mass_parse(library: dict[str, Any], stats: dict[str, Any], base_dir: s
                 stats,
                 retry_map,
                 active_workers,
+                effective_base_dir,
             )
         )
         workers.append(worker_task)
@@ -343,9 +299,15 @@ async def mass_parse(library: dict[str, Any], stats: dict[str, Any], base_dir: s
     return results
 
 
-async def run_pipeline(base_dir: str | None = None) -> bool:
+async def run_pipeline(
+    base_dir: str | None = None,
+    mass_parser: Any = None,
+) -> bool:
     """Main execution pipeline: loads library, runs mass_parse, and generates market summaries."""
     effective_base_dir = _resolve_base_dir(base_dir)
+    if mass_parser is None:
+        mass_parser = mass_parse
+
     logger.info("=== ЗАПУСК МАССОВОГО ПАРСЕРА ===")
 
     library_path = os.path.join(effective_base_dir, "library_v2.json")
@@ -376,7 +338,6 @@ async def run_pipeline(base_dir: str | None = None) -> bool:
     interrupted = False
 
     try:
-        mass_parser = _get_mass_parse()
         await mass_parser(library, stats, base_dir=effective_base_dir)
     except (KeyboardInterrupt, asyncio.CancelledError):
         interrupted = True

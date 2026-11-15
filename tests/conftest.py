@@ -1,3 +1,10 @@
+from __future__ import annotations
+
+import os
+
+# Set immediately on pytest startup to ensure hermetic logging during collection
+os.environ["PYTEST_CURRENT_TEST"] = "1"
+
 import pytest
 
 
