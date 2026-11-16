@@ -1408,6 +1408,125 @@ def test_client_sec_ch_ua_platform_matches_user_agent():
     assert captured_headers[0]["Sec-Ch-Ua-Platform"] == '"macOS"'
 
 
+def test_client_parse_profile_does_not_treat_port_40400_as_http_404():
+    from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
+    from funpay_analytics.scraper.client import parse_profile
+
+    mock_client = AsyncMock()
+    attempts = [0]
+
+    async def mock_get(url, *args, **kwargs):
+        attempts[0] += 1
+        if attempts[0] == 1:
+            raise CurlConnectionError("Failed to connect to 127.0.0.1 port 40400", code=7)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "<html><span class='mr4'>RecoveredUser</span></html>"
+        return resp
+
+    mock_client.get = mock_get
+
+    async def _run():
+        mock_p = MagicMock()
+        mock_p.return_value.parse.return_value = MagicMock(user_id=123)
+        with patch("funpay_analytics.scraper.client.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            with patch("funpay_analytics.scraper.client.extract_profile_lots", return_value=[]):
+                with patch("funpay_analytics.scraper.client.fetch_seller_reviews", return_value=({}, 0)):
+                    res = await parse_profile(mock_client, "123", reviews_parser_cls=mock_p)
+                    return res, mock_sleep.call_count
+
+    res, sleep_calls = asyncio.run(_run())
+    assert res is not None
+    assert res["username"] == "RecoveredUser"
+    assert attempts[0] == 2
+    assert sleep_calls == 1
+
+
+def test_client_parse_profile_404_does_not_retry_and_429_backs_off():
+    from funpay_analytics.scraper.client import parse_profile
+
+    mock_client = AsyncMock()
+    calls_404 = [0]
+
+    async def mock_get_404(url, *args, **kwargs):
+        calls_404[0] += 1
+        resp = MagicMock()
+        resp.status_code = 404
+        return resp
+
+    mock_client.get = mock_get_404
+    res_404 = asyncio.run(parse_profile(mock_client, "404"))
+    assert res_404 is None
+    assert calls_404[0] == 1
+
+    calls_429 = [0]
+
+    async def mock_get_429(url, *args, **kwargs):
+        calls_429[0] += 1
+        resp = MagicMock()
+        resp.status_code = 429
+        return resp
+
+    mock_client.get = mock_get_429
+    sleep_delays = []
+
+    async def fake_sleep(delay):
+        sleep_delays.append(delay)
+
+    with patch("funpay_analytics.scraper.client.asyncio.sleep", side_effect=fake_sleep):
+        res_429 = asyncio.run(parse_profile(mock_client, "429"))
+    assert res_429 is None
+    assert calls_429[0] == 2
+    assert sleep_delays == [5.0]
+
+
+def test_browser_profile_user_agent_and_sec_ch_ua_match_impersonate():
+    from funpay_analytics.core.proxies import IMPERSONATES, get_sec_ch_ua, get_user_agent_for_browser
+
+    for browser in IMPERSONATES:
+        ua_win = get_user_agent_for_browser(browser, platform="Windows")
+        sec = get_sec_ch_ua(user_agent=ua_win)
+        if browser.startswith("edge"):
+            ver = browser.replace("edge", "")
+            assert f"Edg/{ver}" in ua_win
+            assert "Microsoft Edge" in sec
+            assert f'v="{ver}"' in sec
+        else:
+            ver = browser.replace("chrome", "")
+            assert f"Chrome/{ver}" in ua_win
+            assert "Google Chrome" in sec
+            assert f'v="{ver}"' in sec
+
+
+def test_init_db_fails_explicitly_when_migrations_missing(tmp_path, monkeypatch):
+    from funpay_analytics.storage import db as storage_db
+
+    empty_migrations = tmp_path / "empty_migrations"
+    empty_migrations.mkdir()
+    monkeypatch.setattr(storage_db, "MIGRATIONS_DIR", str(empty_migrations))
+    monkeypatch.setenv("FUNPAY_DB_PATH", str(tmp_path / "test.sqlite3"))
+
+    with pytest.raises(RuntimeError, match="No SQL migration files found"):
+        storage_db.init_db()
+
+
+def test_run_pipeline_returns_false_when_queue_file_missing(tmp_path, monkeypatch):
+    import parser as fp_parser
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fp_parser, "BASE_DIR", str(tmp_path))
+
+    # Intentionally do NOT create queue.txt
+    reports_dir = tmp_path / "reports_v2"
+    reports_dir.mkdir()
+    existing_report = tmp_path / "market_report_v2.json"
+    existing_report.write_text('[{"sentinel": true}]', encoding="utf-8")
+
+    ok = asyncio.run(fp_parser.run_pipeline(base_dir=str(tmp_path)))
+    assert ok is False
+    assert existing_report.read_text(encoding="utf-8") == '[{"sentinel": true}]'
+
+
 
 
 

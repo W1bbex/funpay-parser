@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Engine-curl--cffi_TLS_Impersonate-orange?style=for-the-badge" alt="curl-cffi" />
   <img src="https://img.shields.io/badge/Network-Async_Proxy_Pool-green?style=for-the-badge" alt="Proxy Pool" />
   <img src="https://img.shields.io/badge/Storage-SQLite_WAL_%2B_SHA--256_Lake-blueviolet?style=for-the-badge" alt="Storage" />
-  <img src="https://img.shields.io/badge/Tests-Pytest_100_Passed-success?style=for-the-badge&logo=pytest" alt="Pytest" />
+  <img src="https://img.shields.io/badge/Tests-Pytest_105_Passed-success?style=for-the-badge&logo=pytest" alt="Pytest" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
 </p>
 
@@ -24,7 +24,7 @@
 | **Parsing & Normalization** | [`funpayparsers`](https://github.com/funpayhub/funpayparsers) (FunPay Hub), `BeautifulSoup4`, `selectolax`, MIME/MHTML потоковый декодер |
 | **Financial Math Engine** | Интервалы цен через `Decimal`, `Reverse Lot Matching Engine` |
 | **Interactive TUI & Logs** | `Rich` (интерактивные дашборды, таблицы, спиннеры), `Loguru` (ротация логов 10 MB, zip-компрессия, маскирование секретов) |
-| **Quality & Testing** | `pytest` (100 оффлайн-тестов: моки сетевого стека, проверка транзакций, регрессионное покрытие) |
+| **Quality & Testing** | `pytest` (105 оффлайн-тестов: моки сетевого стека, проверка транзакций, регрессионное покрытие) |
 
 ---
 
@@ -69,8 +69,13 @@ def get_browser_for_proxy(proxy_url: str) -> str:
 В публичных отзывах на FunPay нет прямой ссылки на купленный лот — отображается только округлённая сумма сделки и категория. Движок математически восстанавливает кандидатов среди лотов продавца:
 * **Динамические ценовые интервалы (`get_review_interval`)**: Учёт ступенчатого округления FunPay (кратности 10, 100, 1000 рублей) и сервисных сборов.
 * **Расчёт кратностей количества**:
-  $$\text{quantity}_{\min} = \max\left(1, \left\lceil \frac{\text{lower}}{\text{price}_{\text{lot}}} \right\rceil\right)$$
-  $$\text{is\_candidate} = (\text{price}_{\text{lot}} \cdot \text{quantity}_{\min}) < \text{upper}$$
+
+```math
+\begin{aligned}
+\text{quantity}_{\min} &= \max\left(1,\ \left\lceil \frac{\text{lower}}{\text{price}_{\text{lot}}} \right\rceil\right) \\
+\text{is\_candidate} &= (\text{price}_{\text{lot}} \cdot \text{quantity}_{\min}) < \text{upper}
+\end{aligned}
+```
 
 Совпадения и рассчитанные суммы являются оценками и не подтверждают фактическую выручку продавца.
 

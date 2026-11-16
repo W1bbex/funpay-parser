@@ -63,6 +63,8 @@ def init_db():
         conn.commit()
 
         migration_files = sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql")))
+        if not migration_files:
+            raise RuntimeError(f"No SQL migration files found in {MIGRATIONS_DIR}")
         for file_path in migration_files:
             filename = os.path.basename(file_path)
             # Example: 001_initial.sql -> 1
