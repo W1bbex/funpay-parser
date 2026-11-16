@@ -14,6 +14,7 @@ from funpay_analytics.core import (
     atomic_write_json,
     atomic_write_lines,
     get_browser_for_proxy,
+    get_user_agent_for_browser,
     hide_proxy_credentials,
     load_proxies,
     logger,
@@ -62,15 +63,11 @@ async def parse_worker(
     if sleep_fn is None:
         sleep_fn = asyncio.sleep
 
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    ]
-    ua = random.choice(user_agents)
-
     proxies: Any = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     consecutive_errors = 0
     browser: Any = get_browser_for_proxy(proxy_url) if proxy_url else "chrome120"
+    platform_name = random.choice(("Windows", "macOS"))
+    ua = get_user_agent_for_browser(browser, platform=platform_name)
 
     async with session_cls(proxies=proxies, impersonate=browser, timeout=25.0, cookies=FUNPAY_COOKIES) as client:
         while True:
@@ -192,6 +189,7 @@ async def mass_parse(
     queue_path = os.path.join(effective_base_dir, "queue.txt")
     if not os.path.exists(queue_path):
         logger.error("Файл queue.txt не найден! Сначала запустите fetch_ids.py")
+        stats["missing_queue"] = True
         return None
 
     if worker_fn is None:
@@ -336,9 +334,12 @@ async def run_pipeline(
     }
     global_start = time.time()
     interrupted = False
+    missing_input = False
 
     try:
-        await mass_parser(library, stats, base_dir=effective_base_dir)
+        mass_res = await mass_parser(library, stats, base_dir=effective_base_dir)
+        if mass_res is None or stats.get("missing_queue"):
+            missing_input = True
     except (KeyboardInterrupt, asyncio.CancelledError):
         interrupted = True
         logger.warning("Парсинг прерван пользователем (Ctrl+C). Прогресс сохранен.")
@@ -348,7 +349,7 @@ async def run_pipeline(
         cat_counts: dict[str, int] = {}
 
         reports_dir = os.path.join(effective_base_dir, "reports_v2")
-        if os.path.exists(reports_dir):
+        if not missing_input and os.path.exists(reports_dir):
             summary = []
             files = await asyncio.to_thread(os.listdir, reports_dir)
             for file in files:
@@ -399,7 +400,7 @@ async def run_pipeline(
             logger.error(f"Необработанных продавцов (сбой воркеров): {stats['unprocessed_count']}")
         logger.info("========================================")
 
-    if interrupted:
+    if interrupted or missing_input:
         return False
     if stats.get("unprocessed_count", 0) > 0:
         return False

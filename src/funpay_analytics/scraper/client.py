@@ -8,11 +8,63 @@ from bs4 import BeautifulSoup
 from curl_cffi import requests
 from funpayparsers.parsers.reviews_parser import ReviewsParser as DefaultReviewsParser
 
-from funpay_analytics.core import hide_proxy_credentials, logger
+from funpay_analytics.core import (
+    get_sec_ch_ua,
+    get_user_agent_for_browser,
+    hide_proxy_credentials,
+    logger,
+)
 
 from funpay_analytics.parser.lot_filter import extract_profile_lots, match_and_filter_lots
 
 FUNPAY_COOKIES = {"cy": "rub", "locale": "ru"}
+
+
+class ScraperError(Exception):
+    """Base error for HTTP and transport failures in FunPay scraper."""
+
+
+class ScraperHttpError(ScraperError):
+    """HTTP error carrying an explicit status code."""
+
+    def __init__(self, status_code: int, message: str = "") -> None:
+        self.status_code = status_code
+        super().__init__(message or f"HTTP {status_code}")
+
+
+class ScraperRateLimitError(ScraperHttpError):
+    """Raised on HTTP 429 rate-limit responses."""
+
+    def __init__(self, message: str = "429 Too Many Requests") -> None:
+        super().__init__(429, message)
+
+
+class ScraperNotFoundError(ScraperHttpError):
+    """Raised on HTTP 404 responses."""
+
+    def __init__(self, message: str = "404 Not Found") -> None:
+        super().__init__(404, message)
+
+
+class ScraperTlsError(ScraperError):
+    """Raised when TLS handshake is blocked or reset (curl code 35)."""
+
+
+def _extract_status_code(err: Exception) -> int | None:
+    if isinstance(err, ScraperHttpError):
+        return err.status_code
+    resp = getattr(err, "response", None)
+    status = getattr(resp, "status_code", None)
+    return int(status) if isinstance(status, int) else None
+
+
+def _is_tls_error(err: Exception) -> bool:
+    if isinstance(err, ScraperTlsError):
+        return True
+    if getattr(err, "code", None) == 35:
+        return True
+    err_msg = str(err)
+    return "curl: (35)" in err_msg or "TLS connect error" in err_msg
 
 
 def get_smart_delay(is_proxy: bool = False) -> float:
@@ -99,13 +151,16 @@ async def fetch_seller_reviews(
                     cookies=FUNPAY_COOKIES,
                 )
                 if r2.status_code == 429:
-                    raise Exception("429 Too Many Requests")
+                    raise ScraperRateLimitError()
+                if r2.status_code == 404:
+                    raise ScraperNotFoundError()
                 r2.raise_for_status()
                 html_text2 = r2.text
                 success = True
                 break
             except Exception as e:
-                if "429" in str(e):
+                status_code = _extract_status_code(e)
+                if isinstance(e, ScraperRateLimitError) or status_code == 429:
                     if attempt < 3:
                         delay = (attempt + 1) * 15
                         logger.warning(f"[ID {user_id}] Блок 429 на стр {page}. Ждем {delay}с (Попытка {attempt+1}/4)...")
@@ -159,16 +214,13 @@ async def parse_profile(
     if reviews_parser_cls is None:
         reviews_parser_cls = DefaultReviewsParser
     if not user_agent:
-        user_agent = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        user_agent = get_user_agent_for_browser("chrome120", platform="Windows")
     url = f"https://funpay.com/users/{user_id}/"
     platform = '"macOS"' if ("Macintosh" in user_agent or "Mac OS X" in user_agent) else '"Windows"'
     headers = {
         "User-Agent": user_agent,
         "X-Requested-With": "XMLHttpRequest",
-        "Sec-Ch-Ua": '"Not.A/Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "Sec-Ch-Ua": get_sec_ch_ua(user_agent=user_agent),
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": platform,
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -184,23 +236,25 @@ async def parse_profile(
         try:
             response = await client.get(url, headers=headers, cookies=FUNPAY_COOKIES)
             if response.status_code == 429:
-                raise Exception("429 Too Many Requests")
+                raise ScraperRateLimitError()
+            if response.status_code == 404:
+                raise ScraperNotFoundError()
             response.raise_for_status()
             html_text = response.text
             break
         except Exception as e:
-            err_msg = str(e)
-            if "curl: (35)" in err_msg or "TLS connect error" in err_msg:
+            status_code = _extract_status_code(e)
+            if _is_tls_error(e):
                 logger.error(
                     f"[ID {user_id}] Ошибка TLS (35): Соединение с FunPay сброшено/заблокировано (ТСПУ / Cloudflare). "
                     "Требуется рабочий прокси."
                 )
                 return None
-            if "404" in err_msg or (hasattr(e, "response") and getattr(e.response, "status_code", None) == 404):
+            if isinstance(e, ScraperNotFoundError) or status_code == 404:
                 logger.warning(f"[ID {user_id}] Пользователь не найден (404).")
                 return None
             if attempt < 1:
-                if "429" in err_msg:
+                if isinstance(e, ScraperRateLimitError) or status_code == 429:
                     logger.warning(f"[ID {user_id}] Блок 429 на профиле. Пауза 5с перед повтором...")
                     await asyncio.sleep(5.0)
                 else:
