@@ -140,58 +140,93 @@ class SellerSummary:
         rating = float(seller_row[2]) if seller_row[2] is not None else None
         total_reviews = int(seller_row[3]) if seller_row[3] is not None else 0
 
-        # Aggregate reviews from the most recent snapshot containing reviews for this seller
+        # Aggregate reviews from the latest valid review/JSON snapshot
         cursor.execute(
             """
-            SELECT category_text, COUNT(*) as rev_c, COALESCE(SUM(price_minor), 0) as sum_minor
-            FROM reviews
+            SELECT id
+            FROM raw_snapshots
             WHERE seller_id = ?
-              AND raw_snapshot_id = (
-                  SELECT raw_snapshot_id FROM reviews WHERE seller_id = ? ORDER BY raw_snapshot_id DESC LIMIT 1
-              )
-              AND category_text IS NOT NULL
-            GROUP BY category_text
-            """,
-            (seller_id, seller_id),
-        )
-        cat_stats = {
-            row[0]: {"review_count": int(row[1]), "total_rub": float(row[2]) / 100.0}
-            for row in cursor.fetchall()
-        }
-
-        # Aggregate candidate lots from the most recent candidate snapshot
-        cursor.execute(
-            """
-            SELECT scl.category_text, COUNT(DISTINCT scl.lot_id) as lot_c
-            FROM snapshot_candidate_lots scl
-            WHERE scl.raw_snapshot_id = (
-                SELECT scl2.raw_snapshot_id
-                FROM snapshot_candidate_lots scl2
-                JOIN raw_snapshots rs ON scl2.raw_snapshot_id = rs.id
-                WHERE rs.seller_id = ?
-                ORDER BY scl2.raw_snapshot_id DESC LIMIT 1
-            )
-            GROUP BY scl.category_text
+              AND source_type IN ('seller_snapshot_v2', 'reviews')
+              AND COALESCE(parser_status, 'pending') NOT IN ('failed', 'error')
+            ORDER BY id DESC LIMIT 1
             """,
             (seller_id,),
         )
-        lot_counts = {row[0]: int(row[1]) for row in cursor.fetchall()}
-
-        # If seller was harvested via HTML profile without candidate lots, fallback to lot_snapshots
-        if not lot_counts:
+        review_snap_row = cursor.fetchone()
+        if review_snap_row is not None:
             cursor.execute(
                 """
-                SELECT COALESCE(ls.native_section_name, 'Unknown') as cat_name, COUNT(DISTINCT ls.lot_id) as lot_c
-                FROM lot_snapshots ls
-                WHERE ls.seller_id = ?
-                  AND ls.raw_snapshot_id = (
-                      SELECT raw_snapshot_id FROM lot_snapshots WHERE seller_id = ? ORDER BY raw_snapshot_id DESC LIMIT 1
+                SELECT category_text, COUNT(*) as rev_c, COALESCE(SUM(price_minor), 0) as sum_minor
+                FROM reviews
+                WHERE seller_id = ?
+                  AND raw_snapshot_id = ?
+                  AND category_text IS NOT NULL
+                GROUP BY category_text
+                """,
+                (seller_id, review_snap_row[0]),
+            )
+            cat_stats = {
+                row[0]: {"review_count": int(row[1]), "total_rub": float(row[2]) / 100.0}
+                for row in cursor.fetchall()
+            }
+        else:
+            cursor.execute(
+                """
+                SELECT category_text, COUNT(*) as rev_c, COALESCE(SUM(price_minor), 0) as sum_minor
+                FROM reviews
+                WHERE seller_id = ?
+                  AND raw_snapshot_id = (
+                      SELECT raw_snapshot_id FROM reviews WHERE seller_id = ? ORDER BY raw_snapshot_id DESC LIMIT 1
                   )
-                GROUP BY ls.native_section_name
+                  AND category_text IS NOT NULL
+                GROUP BY category_text
                 """,
                 (seller_id, seller_id),
             )
-            lot_counts = {row[0]: int(row[1]) for row in cursor.fetchall()}
+            cat_stats = {
+                row[0]: {"review_count": int(row[1]), "total_rub": float(row[2]) / 100.0}
+                for row in cursor.fetchall()
+            }
+
+        # Aggregate lots strictly from the latest valid snapshot of the matching type
+        cursor.execute(
+            """
+            SELECT id, source_type
+            FROM raw_snapshots
+            WHERE seller_id = ?
+              AND source_type IN ('seller_snapshot_v2', 'profile')
+              AND COALESCE(parser_status, 'pending') NOT IN ('failed', 'error')
+            ORDER BY id DESC LIMIT 1
+            """,
+            (seller_id,),
+        )
+        lot_snap_row = cursor.fetchone()
+        lot_counts: dict[str, int] = {}
+        if lot_snap_row is not None:
+            latest_snap_id, latest_source_type = lot_snap_row[0], lot_snap_row[1]
+            if latest_source_type == "seller_snapshot_v2":
+                cursor.execute(
+                    """
+                    SELECT scl.category_text, COUNT(DISTINCT scl.lot_id) as lot_c
+                    FROM snapshot_candidate_lots scl
+                    WHERE scl.raw_snapshot_id = ?
+                    GROUP BY scl.category_text
+                    """,
+                    (latest_snap_id,),
+                )
+                lot_counts = {row[0]: int(row[1]) for row in cursor.fetchall()}
+            else:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(ls.native_section_name, 'Unknown') as cat_name, COUNT(DISTINCT ls.lot_id) as lot_c
+                    FROM lot_snapshots ls
+                    WHERE ls.seller_id = ?
+                      AND ls.raw_snapshot_id = ?
+                    GROUP BY ls.native_section_name
+                    """,
+                    (seller_id, latest_snap_id),
+                )
+                lot_counts = {row[0]: int(row[1]) for row in cursor.fetchall()}
 
         all_cat_names = set(cat_stats.keys()) | set(lot_counts.keys())
         categories: list[CategorySummary] = []
