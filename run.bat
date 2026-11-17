@@ -26,6 +26,28 @@ if errorlevel 1 (
         pause
         exit /b 1
     )
+    echo [OK] Dependencies installed successfully!
+)
+
+"%~dp0.venv\Scripts\python.exe" -c "import funpay_analytics" >nul 2>&1
+if errorlevel 1 (
+    echo [FunPay Analytics] Installing local funpay_analytics package...
+    "%~dp0.venv\Scripts\python.exe" -c "import importlib.util, setuptools; v = tuple(int(x) for x in setuptools.__version__.split('.')[:2] if x.isdigit()); raise SystemExit(0 if (v >= (70, 1) or importlib.util.find_spec('wheel')) else 1)" >nul 2>&1
+    if errorlevel 1 (
+        call "%~dp0.venv\Scripts\python.exe" -m pip install --no-deps -e .
+    ) else (
+        call "%~dp0.venv\Scripts\python.exe" -m pip install --no-deps --no-build-isolation -e .
+    )
+    if errorlevel 1 (
+        echo [WARNING] Editable pip install failed; trying direct src registration...
+        "%~dp0.venv\Scripts\python.exe" -c "import pathlib, sysconfig; src = (pathlib.Path.cwd() / 'src').resolve(); assert (src / 'funpay_analytics' / '__init__.py').is_file(); (pathlib.Path(sysconfig.get_path('purelib')) / 'funpay_analytics.pth').write_text(str(src) + '\n', encoding='utf-8')"
+    )
+    "%~dp0.venv\Scripts\python.exe" -c "import funpay_analytics" >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Failed to install local funpay_analytics package!
+        pause
+        exit /b 1
+    )
     echo [OK] Virtual environment prepared successfully!
 )
 
