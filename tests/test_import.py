@@ -91,7 +91,7 @@ Content-Type: text/html; charset="utf-8"
         <div>Good</div>
         <div class="text-muted">Cat</div>
     </div>
-    <div class="tc-price tc-seller-sum"> 100 </div>
+    <div class="tc-price tc-seller-sum"> 100 <span class="unit">rub</span></div>
 </a>
 ------MultipartBoundary--'''
 

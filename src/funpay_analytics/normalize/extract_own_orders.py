@@ -45,6 +45,44 @@ def parse_mhtml(file_path):
     soup = BeautifulSoup(html_part, 'html.parser')
     return soup, content_sha256, compressed_path
 
+_SUPPORTED_CURRENCIES = {
+    "rub": "RUB",
+    "rur": "RUB",
+    "руб": "RUB",
+    "р": "RUB",
+    "usd": "USD",
+    "eur": "EUR",
+}
+
+_CURRENCY_SYMBOLS = {
+    "₽": "RUB",
+    "$": "USD",
+    "€": "EUR",
+    "£": "GBP",
+    "₴": "UAH",
+    "₸": "KZT",
+}
+
+
+def _detect_currency(raw_text: str) -> tuple[str | None, str | None]:
+    """Detect a single supported currency code or return an error description."""
+    found: set[str] = set()
+    for sym, code in _CURRENCY_SYMBOLS.items():
+        if sym in raw_text:
+            found.add(code)
+    for token in re.findall(r"[a-zA-Zа-яА-ЯёЁ]+", raw_text):
+        low = token.lower()
+        found.add(_SUPPORTED_CURRENCIES.get(low, token.upper()))
+    if not found:
+        return None, "валюта не указана"
+    if len(found) > 1:
+        return None, f"неоднозначная валюта: {', '.join(sorted(found))}"
+    code = next(iter(found))
+    if code not in ("RUB", "USD", "EUR"):
+        return None, f"неподдерживаемая валюта: {code}"
+    return code, None
+
+
 def extract_orders(soup):
     orders = []
     items = soup.find_all("a", class_="tc-item")
@@ -61,10 +99,13 @@ def extract_orders(soup):
         # Парсим реальную цену продавца через Decimal с поддержкой валют и разделителей
         price_div = item.find("div", class_="tc-seller-sum")
         real_price_minor = None
+        currency = None
+        currency_error = None
         if price_div:
             raw_text = price_div.text.replace('\xa0', ' ').strip()
-            raw_text = re.sub(r'[a-zA-Zа-яА-ЯёЁ]+\.?\s*', '', raw_text).strip()
-            s_cleaned = re.sub(r'[^\d.,]', '', raw_text).strip('.,')
+            currency, currency_error = _detect_currency(raw_text)
+            raw_num = re.sub(r'[a-zA-Zа-яА-ЯёЁ]+\.?\s*', '', raw_text).strip()
+            s_cleaned = re.sub(r'[^\d.,]', '', raw_num).strip('.,')
             if s_cleaned:
                 if ',' in s_cleaned and '.' in s_cleaned:
                     if s_cleaned.rfind('.') > s_cleaned.rfind(','):
@@ -102,6 +143,8 @@ def extract_orders(soup):
             "order_id": order_id,
             "title_raw": title,
             "seller_total_minor": real_price_minor,
+            "currency": currency,
+            "currency_error": currency_error,
             "category_text": category
         })
 
@@ -124,6 +167,9 @@ def validate_orders(orders):
 
         if missing:
             errors.append(f"Заказ #{o.get('order_id', idx)}: отсутствуют обязательные поля {missing}")
+        elif o.get('currency_error') or ('currency' in o and not o.get('currency')):
+            reason = o.get('currency_error') or 'валюта не определена'
+            errors.append(f"Заказ #{o.get('order_id', idx)}: ошибка валюты ({reason})")
         else:
             valid.append(o)
 
@@ -166,12 +212,13 @@ def import_orders(file_path, allow_partial=False):
             for order in valid_orders:
                 cursor.execute('''
                     INSERT INTO own_orders (
-                        order_id, seller_id, title_raw, category_text, seller_total_minor, raw_snapshot_id
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        order_id, seller_id, title_raw, category_text, seller_total_minor, currency, raw_snapshot_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(order_id) DO UPDATE SET
                         title_raw=excluded.title_raw,
                         category_text=excluded.category_text,
                         seller_total_minor=excluded.seller_total_minor,
+                        currency=excluded.currency,
                         raw_snapshot_id=excluded.raw_snapshot_id
                 ''', (
                     order['order_id'],
@@ -179,6 +226,7 @@ def import_orders(file_path, allow_partial=False):
                     order['title_raw'],
                     order['category_text'],
                     order['seller_total_minor'],
+                    order.get('currency') or 'RUB',
                     snapshot_id
                 ))
                 inserted += 1
